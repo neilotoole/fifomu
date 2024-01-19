@@ -5,7 +5,7 @@
 
 # fifomu: mutex with FIFO lock acquisition
 
-[`fifomu`]([`Mutex`](https://pkg.go.dev/github.com/neilotoole/fifomu) is a Go
+[`fifomu`](https://pkg.go.dev/github.com/neilotoole/fifomu) is a Go
 package that provides a [`Mutex`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex)
 whose [`Lock`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.Lock) method returns
 the lock to callers in FIFO call order. This is unlike [`sync.Mutex`](https://pkg.go.dev/sync#Mutex),
