@@ -56,15 +56,17 @@ The benchmarks compare three mutex implementations:
  [`semaphore.Weighted`](https://pkg.go.dev/golang.org/x/sync/semaphore); it
  exists only in the test code, as a comparison baseline.
 
-What conclusions can be drawn from the results below? Well, `fifomu.Mutex`
+What conclusions can be drawn from the results below? Well, `fifomu`
 is always at least 1.5x slower than `sync.Mutex`, and often more. The
-worst results are in `BenchmarkMutexSpin`, where `fifomu.Mutex` is 10x slower
-than `sync.Mutex`.
+worst results are in `BenchmarkMutexSpin`, where `fifomu` is 10x slower
+than `sync.Mutex`. On the plus side, `fifomu` is always faster than
+the baseline `semaphoreMu` implementation, and unlike that baseline,
+calls to `fifomu`'s `Mutex.Lock` method do not allocate.
 
 Benchmark your own workload before committing to `fifomu.Mutex`. In many
 cases you will be able to design around the need for FIFO lock acquisition.
-It's a bit of a code smell to begin with, but sometimes it's the most
-straightforward solution.
+It's a bit of a code smell to begin with, but, that said, sometimes it's the
+most straightforward solution.
 
 ```
 $ GOMAXPROCS=10 go test -bench .
