@@ -148,17 +148,9 @@ func (m *Mutex) notifyWaiters() {
 
 		w := next.Value
 		if m.cur > 0 {
-			// Not enough items for the next waiter.  We could keep going (to try to
-			// find a waiter with a smaller request), but under load that could cause
-			// starvation for large requests; instead, we leave all remaining waiters
-			// blocked.
-			//
-			// Consider a semaphore used as a read-write lock, with N tokens, N
-			// readers, and one writer.  Each reader can LockContext(1) to obtain a read
-			// lock.  The writer can LockContext(N) to obtain a write lock, excluding all
-			// of the readers.  If we allow the readers to jump ahead in the queue,
-			// the writer will starve — there is always one token available for every
-			// reader.
+			// Anti-starvation measure: we could keep going, but under load
+			// that could cause starvation for large requests; instead, we leave
+			// all remaining waiters blocked.
 			break
 		}
 
