@@ -8,20 +8,20 @@
 [`fifomu`](https://pkg.go.dev/github.com/neilotoole/fifomu) is a Go
 package that provides a [`Mutex`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex)
 whose [`Lock`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.Lock) method returns
-the lock to callers in FIFO call order. This is unlike [`sync.Mutex`](https://pkg.go.dev/sync#Mutex),
+the lock to callers in FIFO call order. This is in contrast to [`sync.Mutex`](https://pkg.go.dev/sync#Mutex),
 where a single goroutine can repeatedly lock and unlock and relock the mutex
-without handing off to other lock waiter goroutines (until after a 1ms
-starvation threshold, at which point `sync.Mutex` enters "starvation mode"
-for those starved waiters, but that's too late for our use case).
+without handing off to other lock waiter goroutines (that is, until after a 1ms
+starvation threshold, at which point `sync.Mutex` enters a FIFO "starvation mode"
+for those starved waiters, but that's too late for some use cases).
 
 `fifomu.Mutex` implements the exported methods of `sync.Mutex` and thus is
 a drop-in replacement (and by extension, also implements [`sync.Locker`](https://pkg.go.dev/sync#Locker)).
 It also provides a bonus context-aware [`LockContext`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.LockContext)
 method.
 
-Note: unless you need the FIFO behavior, you should prefer `sync.Mutex`
-because, for typical workloads, its "greedy-relock" behavior requires
-less goroutine switching and yields better performance. See the [benchmarks](#benchmarks)
+Note: unless you need the FIFO behavior, you should prefer `sync.Mutex`.
+For typical workloads, its "greedy-relock" behavior requires less goroutine
+switching and yields better performance. See the [benchmarks](#benchmarks)
 section below.
 
 
@@ -44,6 +44,7 @@ func main() {
   mu := &fifomu.Mutex{}
   mu.Lock()
   defer mu.Unlock()
+  
   // ... Do something critical
 }
 ```
@@ -51,16 +52,19 @@ func main() {
 Additionally, `fifomu` provides a context-aware
 [`Mutex.LockContext`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.LockContext)
 method that blocks until the mutex is available or ctx is done, returning the
-value of `context.Cause(ctx.Err())`.
+value of [`context.Cause(ctx)`](https://pkg.go.dev/context#Cause).
 
 ```go
 func foo(ctx context.Context) error {
   mu := &fifomu.Mutex{}
   if err := mu.LockContext(ctx); err != nil {
+    // Oh dear, ctx was cancelled
     return err
   }
   defer mu.Unlock()
+  
   // ... Do something critical
+  
   return nil
 }
 ```

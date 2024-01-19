@@ -2,20 +2,21 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Package fifomu provides a Mutex whose Lock method returns
-// the lock to callers in FIFO call order. This is unlike sync.Mutex, where
+// Package fifomu provides a Mutex whose Lock method returns the lock to
+// callers in FIFO call order. This is in contrast to sync.Mutex, where
 // a single goroutine can repeatedly lock and unlock and relock the mutex
-// without handing off to other lock waiter goroutines (until after a 1ms
-// starvation threshold, at which point sync.Mutex enters "starvation mode"
-// for those starved waiters, but that's too late for our use case).
+// without handing off to other lock waiter goroutines (that is, until after
+// a 1ms starvation threshold, at which point sync.Mutex enters a FIFO
+// "starvation mode" for those starved waiters, but that's too late for some
+// use cases).
 //
 // fifomu.Mutex implements the exported methods of sync.Mutex and thus is
 // a drop-in replacement (and by extension also implements sync.Locker).
 // It also provides a bonus context-aware Mutex.LockContext method.
 //
-// Note: unless you need the FIFO behavior, you should prefer sync.Mutex,
-// because, for typical workloads, its "greedy-relock" behavior requires
-// less goroutine switching and yields better performance.
+// Note: unless you need the FIFO behavior, you should prefer sync.Mutex.
+// For typical workloads, its "greedy-relock" behavior requires less goroutine
+// switching and yields better performance.
 package fifomu
 
 import (
@@ -66,7 +67,7 @@ func (m *Mutex) Lock() {
 // If the lock is already in use, the calling goroutine
 // blocks until the mutex is available or ctx is done.
 //
-// On failure, LockContext returns context.Cause(ctx.Err()) and
+// On failure, LockContext returns context.Cause(ctx) and
 // leaves the mutex unchanged.
 //
 // If ctx is already done, LockContext may still succeed without blocking.
