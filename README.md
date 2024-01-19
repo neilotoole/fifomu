@@ -1,3 +1,8 @@
+[![Go Reference](https://pkg.go.dev/badge/github.com/neilotoole/fifomu.svg)](https://pkg.go.dev/github.com/neilotoole/fifomu)
+[![Go Report Card](https://goreportcard.com/badge/neilotoole/fifomu)](https://goreportcard.com/report/neilotoole/fifomu)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/neilotoole/fifomu/blob/master/LICENSE)
+![Pipeline](https://github.com/neilotoole/fifomu/actions/workflows/go.yml/badge.svg)
+
 # fifomu: mutex with FIFO lock acquisition
 
 `fifomu` is a Go package that provides a `Mutex` whose `Lock` method returns
