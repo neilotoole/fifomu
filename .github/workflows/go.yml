@@ -8,22 +8,29 @@ on:
   pull_request:
 
 jobs:
+  build-test:
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
 
-  build:
-    runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
+    - uses: actions/setup-go@v4
       with:
         go-version-file: go.mod
 
     - name: Build
       run: go build -v ./...
 
+    - name: Lint
+      uses: golangci/golangci-lint-action@v3
+
     - name: Test
       run: go test -v ./...
 
     - name: Benchmark
       run: go test -bench=.
+
+
