@@ -11,6 +11,7 @@
 //
 // fifomu.Mutex implements the exported methods of sync.Mutex and thus is
 // a drop-in replacement (and by extension also implements sync.Locker).
+// It also provides a bonus context-aware Mutex.LockContext method.
 //
 // Note: unless you need the FIFO behavior, you should prefer sync.Mutex,
 // because, for typical workloads, its "greedy-relock" behavior requires
