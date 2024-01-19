@@ -8,6 +8,20 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version-file: go.mod
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v3
+
   build-test:
     strategy:
       matrix:
@@ -23,9 +37,6 @@ jobs:
 
     - name: Build
       run: go build -v ./...
-
-    - name: Lint
-      uses: golangci/golangci-lint-action@v3
 
     - name: Test
       run: go test -v ./...
