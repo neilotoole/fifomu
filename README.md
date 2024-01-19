@@ -15,7 +15,7 @@ starvation threshold, at which point `sync.Mutex` enters "starvation mode"
 for those starved waiters, but that's too late for our use case).
 
 `fifomu.Mutex` implements the exported methods of `sync.Mutex` and thus is
-a drop-in replacement (and by extension, also implements `sync.Locker`).
+a drop-in replacement (and by extension, also implements [`sync.Locker`](https://pkg.go.dev/sync#Locker)).
 It also provides a bonus context-aware [`LockContext`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.LockContext)
 method.
 
