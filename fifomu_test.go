@@ -114,6 +114,32 @@ func TestMutex(t *testing.T) {
 	}
 }
 
+func TestMutexMisuse(t *testing.T) {
+	t.Run("Mutex.Unlock", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("Expected panic due to Unlock of unlocked mutex")
+			}
+		}()
+
+		mu := newMu()
+		mu.Unlock()
+	})
+
+	t.Run("Mutex.Unlock2", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Errorf("Expected panic due to Unlock of unlocked mutex")
+			}
+		}()
+
+		mu := newMu()
+		mu.Lock()
+		mu.Unlock() //nolint:staticcheck
+		mu.Unlock()
+	})
+}
+
 func TestMutexFairness(t *testing.T) {
 	mu := newMu()
 	stop := make(chan bool)
