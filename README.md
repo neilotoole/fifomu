@@ -121,3 +121,9 @@ BenchmarkMutexSpin/stdlib-10                     5025486               233.7 ns/
 BenchmarkMutexSpin/fifomu-10                      514082               2362 ns/op              0 B/op          0 allocs/op
 BenchmarkMutexSpin/semaphoreMu-10                 496808               2512 ns/op            159 B/op          2 allocs/op
 ```
+
+## Related
+
+- [`streamcache`](https://github.com/neilotoole/streamcache) uses `fifomu` to ensure fairness
+  for concurrent readers of a stream.
+- [`sq`](https://github.com/neilotoole/sq) uses `fifomu` indirectly via `streamcache`.
