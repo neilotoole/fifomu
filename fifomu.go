@@ -49,7 +49,7 @@ var _ sync.Locker = (*Mutex)(nil)
 // TryLock cannot jump ahead of FIFO-queued waiters.
 type Mutex struct {
 	waiters list[waiter]
-	cur     int64
+	locked  bool
 	mu      sync.Mutex
 }
 
@@ -59,8 +59,8 @@ type Mutex struct {
 // blocks until the mutex is available.
 func (m *Mutex) Lock() {
 	m.mu.Lock()
-	if m.cur == 0 && m.waiters.len == 0 {
-		m.cur++
+	if !m.locked && m.waiters.len == 0 {
+		m.locked = true
 		m.mu.Unlock()
 		return
 	}
@@ -91,8 +91,8 @@ func (m *Mutex) Lock() {
 // behavior should re-check ctx.Err() after acquiring.
 func (m *Mutex) LockContext(ctx context.Context) error {
 	m.mu.Lock()
-	if m.cur == 0 && m.waiters.len == 0 {
-		m.cur++
+	if !m.locked && m.waiters.len == 0 {
+		m.locked = true
 		m.mu.Unlock()
 		return nil
 	}
@@ -137,9 +137,9 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 // of queued waiters.
 func (m *Mutex) TryLock() bool {
 	m.mu.Lock()
-	success := m.cur == 0 && m.waiters.len == 0
+	success := !m.locked && m.waiters.len == 0
 	if success {
-		m.cur++
+		m.locked = true
 	}
 	m.mu.Unlock()
 	return success
@@ -153,11 +153,11 @@ func (m *Mutex) TryLock() bool {
 // arrange for another goroutine to unlock it.
 func (m *Mutex) Unlock() {
 	m.mu.Lock()
-	m.cur--
-	if m.cur < 0 {
+	if !m.locked {
 		m.mu.Unlock()
 		panic("sync: unlock of unlocked mutex")
 	}
+	m.locked = false
 	m.notifyWaiters()
 	m.mu.Unlock()
 }
@@ -171,12 +171,12 @@ func (m *Mutex) Unlock() {
 // satisfy several smaller Acquire calls; that does not apply here.)
 func (m *Mutex) notifyWaiters() {
 	next := m.waiters.front()
-	if next == nil || m.cur > 0 {
+	if next == nil || m.locked {
 		return
 	}
 
 	w := next.Value
-	m.cur++
+	m.locked = true
 	m.waiters.remove(next)
 
 	// Every pooled waiter channel enters the pool with an empty buffer:
