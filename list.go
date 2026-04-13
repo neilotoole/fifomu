@@ -43,16 +43,6 @@ func (l *list) pushBackElem(v waiter) *element {
 	return e
 }
 
-// pushBack inserts a new element with value v at the back of list l.
-//
-// Callers that may need to later remove the element (e.g., LockContext
-// on ctx.Done) should use pushBackElem instead to obtain the element
-// pointer; pushBack is for callers that only ever dequeue from the
-// front (e.g., Lock, which waits for its signal and never cancels).
-func (l *list) pushBack(v waiter) {
-	l.pushBackElem(v)
-}
-
 // remove removes e from l if e is an element of list l,
 // and returns e to the element pool. If e is not an
 // element of l, remove is a no-op — in particular, it

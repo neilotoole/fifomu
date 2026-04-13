@@ -119,7 +119,7 @@ func TestList_RemoveDoesNotDoublePool(t *testing.T) {
 // notifyWaiters.
 func TestNotifyWaiters_PanicsOnViolatedInvariant(t *testing.T) {
 	var mu Mutex
-	mu.Lock() // cur = 1, no waiters
+	mu.Lock() // locked = true, no waiters
 
 	// Manually push a waiter with a pre-filled buffer. In normal
 	// operation the pool invariant guarantees this never happens;
@@ -127,7 +127,7 @@ func TestNotifyWaiters_PanicsOnViolatedInvariant(t *testing.T) {
 	mu.mu.Lock()
 	w := waiter(make(chan struct{}, 1))
 	w <- struct{}{} // buffer now full
-	mu.waiters.pushBack(w)
+	mu.waiters.pushBackElem(w)
 	mu.mu.Unlock()
 
 	defer func() {

@@ -17,6 +17,15 @@
 // is non-empty, so that TryLock cannot jump ahead of FIFO-queued waiters.
 // See Mutex.TryLock for details.
 //
+// # When to use
+//
+// Use fifomu when arrival-order fairness among contending goroutines is a
+// correctness property, not just a performance one. Typical cases:
+// streaming fan-out where each consumer must see chunks in arrival order,
+// rate-limited queues where sync.Mutex's greedy-relock would starve some
+// callers, and test scaffolding that needs deterministic acquire order.
+// If your code doesn't care who acquires next, use sync.Mutex instead.
+//
 // # FIFO guarantee
 //
 // FIFO ordering applies to goroutines that have been queued as waiters.
@@ -94,7 +103,7 @@ func (m *Mutex) Lock() {
 	}
 
 	w := waiterPool.Get().(waiter) //nolint:errcheck
-	m.waiters.pushBack(w)
+	m.waiters.pushBackElem(w)
 	m.mu.Unlock()
 
 	w.wait()
@@ -133,7 +142,7 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 	case <-ctx.Done():
 		err := context.Cause(ctx)
 		m.mu.Lock()
-		if w.tryDrain() {
+		if w.tryReceive() {
 			// Acquired the lock after we were canceled. Rather than
 			// trying to fix up the queue, just pretend we didn't notice
 			// the cancellation.
@@ -178,26 +187,33 @@ func (m *Mutex) TryLock() bool {
 // It is allowed for one goroutine to lock a Mutex and then
 // arrange for another goroutine to unlock it.
 //
-// Unlike sync.Mutex, Unlock checks its state before mutating it,
-// so a Mutex survives recover from the double-unlock panic as a
-// normally-unlocked mutex. (sync.Mutex decrements before checking
-// and leaves the mutex in a permanently corrupt state after
-// recovery.) Callers still should not recover from mutex panics —
-// it almost always indicates a real logic bug — but if they do,
-// the Mutex is usable afterwards.
+// Recover-safety for the double-unlock panic: unlike sync.Mutex,
+// Unlock checks its state before mutating it. A Mutex therefore
+// survives recover from the "sync: unlock of unlocked mutex"
+// panic as a normally-unlocked mutex. (sync.Mutex decrements
+// before checking and leaves the mutex in a permanently corrupt
+// state after recovery.) Callers should not rely on recover to
+// paper over mutex misuse — the panic almost always indicates a
+// real logic bug — but the specific case of recovering from a
+// stray Unlock leaves the Mutex in a usable state.
+//
+// Other panic paths (in particular the waiter-pool-invariant
+// panic in waiter.signal) are bug-detector panics and not
+// intended to be recoverable; they should never fire in correct
+// use of the package.
 func (m *Mutex) Unlock() {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if !m.locked {
-		m.mu.Unlock()
 		panic("sync: unlock of unlocked mutex")
 	}
 	m.locked = false
 	m.notifyWaiters()
-	m.mu.Unlock()
 }
 
 // notifyWaiters signals the next queued waiter, if any, that it has
-// acquired the mutex. Must be called with m.mu held.
+// acquired the mutex. Must be called with m.mu held and m.locked == false
+// (the sole caller is Unlock, which clears m.locked immediately before).
 //
 // Only a single waiter is signaled per call. A binary mutex can release
 // at most one holder at a time, so there is no point looping. (The
@@ -205,7 +221,7 @@ func (m *Mutex) Unlock() {
 // satisfy several smaller Acquire calls; that does not apply here.)
 func (m *Mutex) notifyWaiters() {
 	next := m.waiters.front()
-	if next == nil || m.locked {
+	if next == nil {
 		return
 	}
 	w := next.value
@@ -229,14 +245,15 @@ type waiter chan struct{}
 //
 // signal uses a non-blocking send (select-with-default) so that any
 // future change which violates the pool invariant fails loudly with
-// a panic, rather than reintroducing a historical deadlock: an
-// earlier version of this package used an unbuffered channel for
-// the handoff, and a LockContext caller whose ctx fired concurrently
-// with the send would commit to the ctx.Done branch of its outer
-// select, leaving this sender parked on w while still holding
-// Mutex.mu — deadlocking the canceling receiver (which waits on
-// Mutex.mu to inspect w) and every subsequent Lock caller piling
-// up behind Mutex.mu.
+// a panic, rather than reintroducing a historical deadlock.
+//
+// The history: an earlier version of this package used an unbuffered
+// channel for the handoff. A LockContext caller whose ctx fired
+// concurrently with the send would commit to the ctx.Done branch of
+// its outer select, leaving this sender parked on w while still
+// holding Mutex.mu — deadlocking the canceling receiver (which needs
+// Mutex.mu to inspect w) and every subsequent Lock caller piling up
+// behind Mutex.mu.
 func (w waiter) signal() {
 	select {
 	case w <- struct{}{}:
@@ -253,12 +270,12 @@ func (w waiter) wait() {
 	<-w
 }
 
-// tryDrain non-blockingly receives any pending signal on w,
+// tryReceive non-blockingly receives any pending signal on w,
 // returning true if one was consumed. Used by LockContext's cancel
 // handler to distinguish "ctx fired before signal" (false, remove
 // from queue and return the ctx error) from "signal raced with
 // ctx cancel" (true, accept the lock and return nil).
-func (w waiter) tryDrain() bool {
+func (w waiter) tryReceive() bool {
 	select {
 	case <-w:
 		return true
