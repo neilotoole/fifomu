@@ -186,7 +186,7 @@ func (m *Mutex) notifyWaiters() {
 		return
 	}
 
-	w := next.Value
+	w := next.value
 	m.locked = true
 	m.waiters.remove(next)
 

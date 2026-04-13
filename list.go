@@ -9,7 +9,7 @@ var elementPool = sync.Pool{New: func() any { return new(element[waiter]) }}
 // list is a doubly-linked list of type T.
 type list[T any] struct {
 	root element[T]
-	len  uint
+	len  int
 }
 
 func (l *list[T]) lazyInit() {
@@ -35,7 +35,7 @@ func (l *list[T]) pushBackElem(v T) *element[T] {
 	l.lazyInit()
 
 	e := elementPool.Get().(*element[T]) //nolint:errcheck
-	e.Value = v
+	e.value = v
 	l.insert(e, l.root.prev)
 	return e
 }
@@ -63,7 +63,7 @@ func (l *list[T]) remove(e *element[T]) {
 	e.prev = nil
 	e.list = nil
 	var zero T
-	e.Value = zero
+	e.value = zero
 	l.len--
 	elementPool.Put(e)
 }
@@ -84,5 +84,5 @@ type element[T any] struct {
 
 	list *list[T]
 
-	Value T
+	value T
 }

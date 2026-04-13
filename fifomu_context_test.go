@@ -267,7 +267,7 @@ func TestLockContext_HammerConcurrent(t *testing.T) {
 // waitForWaiters blocks until m has at least n queued waiters, or
 // fails the test after a generous deadline. Replaces sleep-based
 // gating so the FIFO tests don't flake on loaded CI.
-func waitForWaiters(t *testing.T, m *fifomu.Mutex, n uint) {
+func waitForWaiters(t *testing.T, m *fifomu.Mutex, n int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for fifomu.WaitersLen(m) < n {
@@ -297,7 +297,7 @@ func TestMutex_FIFOOrdering(t *testing.T) {
 			order <- i
 			mu.Unlock()
 		}(i)
-		waitForWaiters(t, &mu, uint(i+1))
+		waitForWaiters(t, &mu, i+1)
 	}
 
 	mu.Unlock()
@@ -337,7 +337,7 @@ func TestLockContext_FIFOAmongContextWaiters(t *testing.T) {
 			order <- i
 			mu.Unlock()
 		}(i)
-		waitForWaiters(t, &mu, uint(i+1))
+		waitForWaiters(t, &mu, i+1)
 	}
 
 	mu.Unlock()

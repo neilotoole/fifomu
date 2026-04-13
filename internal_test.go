@@ -25,7 +25,7 @@ func TestList_RemoveIsIdempotent(t *testing.T) {
 	e2 := l.pushBackElem(w2)
 	e3 := l.pushBackElem(w3)
 
-	if got, want := l.len, uint(3); got != want {
+	if got, want := l.len, 3; got != want {
 		t.Fatalf("len after 3 pushes = %d, want %d", got, want)
 	}
 

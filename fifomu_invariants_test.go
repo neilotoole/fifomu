@@ -40,7 +40,7 @@ func TestMutex_MixedQueueLockAndLockContext(t *testing.T) {
 			order <- i
 			mu.Unlock()
 		})
-		waitForWaiters(t, &mu, uint(i+1))
+		waitForWaiters(t, &mu, i+1)
 	}
 
 	mu.Unlock()
@@ -116,7 +116,7 @@ func TestMutex_MiddleOfQueueCancel(t *testing.T) {
 	}
 
 	// Queue length should now be 3.
-	if got, want := fifomu.WaitersLen(&mu), uint(3); got != want {
+	if got, want := fifomu.WaitersLen(&mu), 3; got != want {
 		t.Fatalf("waiters.len after middle cancel = %d, want %d", got, want)
 	}
 
