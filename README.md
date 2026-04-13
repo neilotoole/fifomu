@@ -125,7 +125,7 @@ In both cases, callers that require ctx-strict behavior should re-check
 Internally, `fifomu.Mutex` is a `sync.Mutex` plus a FIFO queue of waiters:
 
 - **Uncontended acquires** take the inner mutex briefly, flip a `locked`
-  bool, and return. See `BenchmarkLockContext_Uncontended` / `BenchmarkMutexUncontended/fifomu` for current cost; allocation-free.
+  bool, and return. See `BenchmarkLockContext_FastPath` / `BenchmarkMutexUncontended/fifomu` for current cost; allocation-free.
 - **When the mutex is held**, a caller appends itself to the waiter queue
   — a pooled doubly-linked list of buffered(1) channels — and blocks on
   its own channel.
