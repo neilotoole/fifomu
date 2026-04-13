@@ -43,24 +43,26 @@ func (l *list[T]) pushBackElem(v T) *element[T] {
 // pushBack inserts a new element e with value v at
 // the back of list l.
 func (l *list[T]) pushBack(v T) {
-	l.lazyInit()
-
-	e := elementPool.Get().(*element[T]) //nolint:errcheck
-	e.Value = v
-	l.insert(e, l.root.prev)
+	l.pushBackElem(v)
 }
 
-// remove removes e from l if e is an element of list l.
+// remove removes e from l if e is an element of list l,
+// and returns e to the element pool. If e is not an
+// element of l, remove is a no-op — in particular, it
+// does not re-pool e, so accidental double-removes
+// cannot hand the same element to two goroutines.
 func (l *list[T]) remove(e *element[T]) {
-	if e.list == l {
-		e.prev.next = e.next
-		e.next.prev = e.prev
-		e.next = nil // avoid memory leaks
-		e.prev = nil // avoid memory leaks
-		e.list = nil
-		l.len--
+	if e.list != l {
+		return
 	}
-
+	e.prev.next = e.next
+	e.next.prev = e.prev
+	e.next = nil
+	e.prev = nil
+	e.list = nil
+	var zero T
+	e.Value = zero
+	l.len--
 	elementPool.Put(e)
 }
 

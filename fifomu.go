@@ -3,7 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // Package fifomu provides a Mutex whose Lock method returns the lock to
-// callers in FIFO call order. This is in contrast to sync.Mutex, where
+// queued callers in FIFO call order. This is in contrast to sync.Mutex, where
 // a single goroutine can repeatedly lock and unlock and relock the mutex
 // without handing off to other lock waiter goroutines (that is, until after
 // a 1ms starvation threshold, at which point sync.Mutex enters a FIFO
@@ -13,6 +13,13 @@
 // fifomu.Mutex implements the exported methods of sync.Mutex and thus is
 // a drop-in replacement (and by extension also implements sync.Locker).
 // It also provides a bonus context-aware Mutex.LockContext method.
+//
+// FIFO ordering applies to goroutines that have been queued as waiters.
+// Arrival order across goroutines simultaneously contending for the internal
+// state protecting the waiter queue is not guaranteed: a goroutine that
+// called Lock slightly later may enqueue slightly earlier. In practice this
+// reordering window is limited to the brief critical section protecting the
+// queue itself (microseconds under typical load).
 //
 // Note: unless you need the FIFO behavior, you should prefer sync.Mutex.
 // For typical workloads, its "greedy-relock" behavior requires less goroutine
@@ -27,7 +34,8 @@ import (
 var _ sync.Locker = (*Mutex)(nil)
 
 // Mutex is a mutual exclusion lock whose Lock method returns
-// the lock to callers in FIFO call order.
+// the lock to queued callers in FIFO call order. See the package
+// documentation for the precise guarantee and its caveats.
 //
 // A Mutex must not be copied after first use.
 //
@@ -36,6 +44,9 @@ var _ sync.Locker = (*Mutex)(nil)
 // Mutex implements the same methodset as sync.Mutex, so it can
 // be used as a drop-in replacement. It implements an additional
 // method Mutex.LockContext, which provides context-aware locking.
+// Note that unlike sync.Mutex.TryLock, Mutex.TryLock deliberately
+// reports failure whenever the waiter queue is non-empty, so that
+// TryLock cannot jump ahead of FIFO-queued waiters.
 type Mutex struct {
 	waiters list[waiter]
 	cur     int64
@@ -48,7 +59,7 @@ type Mutex struct {
 // blocks until the mutex is available.
 func (m *Mutex) Lock() {
 	m.mu.Lock()
-	if m.cur <= 0 && m.waiters.len == 0 {
+	if m.cur == 0 && m.waiters.len == 0 {
 		m.cur++
 		m.mu.Unlock()
 		return
@@ -70,10 +81,17 @@ func (m *Mutex) Lock() {
 // On failure, LockContext returns context.Cause(ctx) and
 // leaves the mutex unchanged.
 //
-// If ctx is already done, LockContext may still succeed without blocking.
+// If ctx is already done when LockContext is called and the
+// lock is available with no queued waiters, LockContext may
+// still succeed without blocking.
+//
+// If the mutex becomes available concurrently with ctx
+// cancellation, LockContext may acquire the mutex and return
+// nil even though ctx is done. Callers that require ctx-strict
+// behavior should re-check ctx.Err() after acquiring.
 func (m *Mutex) LockContext(ctx context.Context) error {
 	m.mu.Lock()
-	if m.cur <= 0 && m.waiters.len == 0 {
+	if m.cur == 0 && m.waiters.len == 0 {
 		m.cur++
 		m.mu.Unlock()
 		return nil
@@ -89,20 +107,15 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 		m.mu.Lock()
 		select {
 		case <-w:
-			// Acquired the lock after we were canceled.  Rather than trying to
-			// fix up the queue, just pretend we didn't notice the cancellation.
+			// Acquired the lock after we were canceled. Rather than
+			// trying to fix up the queue, just pretend we didn't notice
+			// the cancellation.
 			err = nil
-			waiterPool.Put(w)
 		default:
-			isFront := m.waiters.front() == elem
 			m.waiters.remove(elem)
-			// If we're at the front and there's extra tokens left,
-			// notify other waiters.
-			if isFront && m.cur < 1 {
-				m.notifyWaiters()
-			}
 		}
 		m.mu.Unlock()
+		waiterPool.Put(w)
 		return err
 
 	case <-w:
@@ -112,9 +125,14 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 }
 
 // TryLock tries to lock m and reports whether it succeeded.
+//
+// Unlike sync.Mutex.TryLock, Mutex.TryLock reports failure whenever
+// the waiter queue is non-empty, even if the mutex is momentarily
+// unheld. This preserves FIFO ordering: TryLock must not jump ahead
+// of queued waiters.
 func (m *Mutex) TryLock() bool {
 	m.mu.Lock()
-	success := m.cur <= 0 && m.waiters.len == 0
+	success := m.cur == 0 && m.waiters.len == 0
 	if success {
 		m.cur++
 	}
@@ -139,27 +157,28 @@ func (m *Mutex) Unlock() {
 	m.mu.Unlock()
 }
 
+// notifyWaiters signals the next queued waiter, if any, that it has
+// acquired the mutex. Must be called with m.mu held.
 func (m *Mutex) notifyWaiters() {
-	for {
-		next := m.waiters.front()
-		if next == nil {
-			break // No more waiters blocked.
-		}
-
-		w := next.Value
-		if m.cur > 0 {
-			// Anti-starvation measure: we could keep going, but under load
-			// that could cause starvation for large requests; instead, we leave
-			// all remaining waiters blocked.
-			break
-		}
-
-		m.cur++
-		m.waiters.remove(next)
-		w <- struct{}{}
+	next := m.waiters.front()
+	if next == nil || m.cur > 0 {
+		return
 	}
+
+	w := next.Value
+	m.cur++
+	m.waiters.remove(next)
+
+	// Non-blocking send into the buffered waiter channel. The buffer
+	// is always empty at this point: the waiter's previous holder
+	// drained it before returning the channel to the pool, and no
+	// other goroutine can signal w while we hold m.mu. We must not
+	// use an unbuffered send here — a racing ctx.Done in LockContext
+	// would leave us parked on the send while still holding m.mu,
+	// deadlocking the next caller.
+	w <- struct{}{}
 }
 
-var waiterPool = sync.Pool{New: func() any { return waiter(make(chan struct{})) }}
+var waiterPool = sync.Pool{New: func() any { return waiter(make(chan struct{}, 1)) }}
 
 type waiter chan struct{}
