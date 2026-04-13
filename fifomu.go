@@ -48,10 +48,21 @@ var _ sync.Locker = (*Mutex)(nil)
 // reports failure whenever the waiter queue is non-empty, so that
 // TryLock cannot jump ahead of FIFO-queued waiters.
 type Mutex struct {
+	_ noCopy
+
 	waiters list[waiter]
 	locked  bool
 	mu      sync.Mutex
 }
+
+// noCopy may be embedded into structs which must not be copied
+// after the first use. It is a zero-sized marker type with Lock
+// and Unlock methods so that `go vet -copylocks` detects accidental
+// copies. See https://golang.org/issues/8005#issuecomment-190753527.
+type noCopy struct{}
+
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
 
 // Lock locks m.
 //
