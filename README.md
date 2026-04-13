@@ -213,8 +213,8 @@ most straightforward path.
 
 Benchmark name shapes (inherited from the stdlib `sync/mutex_test.go`):
 
-- `Uncontended` — parallel workers, each with its own mutex. Measures
-  raw fast-path cost.
+- `Uncontended` / `FastPath` — parallel workers, each with its own mutex
+  (no contention). Measures raw fast-path cost.
 - `Mutex` — parallel workers contending on one mutex. The baseline
   contended workload.
 - `Slack` — like `Mutex` but with 10× goroutines over GOMAXPROCS, which
@@ -239,7 +239,7 @@ goos: darwin
 goarch: arm64
 pkg: github.com/neilotoole/fifomu
 cpu: Apple M1 Max
-BenchmarkLockContext_Uncontended-10        349898984          3.457 ns/op    0 B/op   0 allocs/op
+BenchmarkLockContext_FastPath-10           349898984          3.457 ns/op    0 B/op   0 allocs/op
 BenchmarkLockContext_Contended-10            6611028        191.8   ns/op    0 B/op   0 allocs/op
 BenchmarkLockContext_Cancel-10              13624764         88.34  ns/op    0 B/op   0 allocs/op
 BenchmarkMutexUncontended/stdlib-10        696781160          1.793 ns/op    0 B/op   0 allocs/op

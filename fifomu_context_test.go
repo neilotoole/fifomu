@@ -384,12 +384,12 @@ func TestTryLock_RefusesWhileWaiterQueued(t *testing.T) {
 	wg.Wait()
 }
 
-// BenchmarkLockContext_Uncontended measures the fast path of
+// BenchmarkLockContext_FastPath measures the fast path of
 // LockContext with each parallel worker holding its own mutex
 // (no cross-goroutine contention). Direct comparison with
 // BenchmarkMutexUncontended/fifomu shows LockContext's per-call
 // overhead vs plain Lock.
-func BenchmarkLockContext_Uncontended(b *testing.B) {
+func BenchmarkLockContext_FastPath(b *testing.B) {
 	b.ReportAllocs()
 	ctx := context.Background()
 	b.RunParallel(func(pb *testing.PB) {
