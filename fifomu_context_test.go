@@ -366,34 +366,22 @@ func TestTryLock_RefusesWhileWaiterQueued(t *testing.T) {
 	var mu fifomu.Mutex
 	mu.Lock()
 
-	var queued atomic.Bool
-	started := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		close(started)
-		queued.Store(true)
+	var wg sync.WaitGroup
+	wg.Go(func() {
 		mu.Lock()
-		<-done
-		mu.Unlock()
-	}()
+		mu.Unlock() //nolint:staticcheck // acquire-then-release is the assertion
+	})
 
-	<-started
-	// Wait for the goroutine to enqueue.
-	for i := 0; i < 100 && !queued.Load(); i++ {
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(10 * time.Millisecond)
+	// Deterministically wait for the goroutine to enqueue.
+	waitForWaiters(t, &mu, 1)
 
-	// While the goroutine is queued and we hold the lock, TryLock must
-	// fail — but more importantly, even after we Unlock, a concurrent
-	// TryLock call before the queued goroutine acquires would fail to
-	// preserve FIFO. We exercise the stronger first case here.
+	// While the goroutine is queued and we hold the lock, TryLock must fail.
 	if mu.TryLock() {
 		t.Fatal("TryLock succeeded while another goroutine holds the lock")
 	}
 
-	close(done)
 	mu.Unlock()
+	wg.Wait()
 }
 
 // BenchmarkLockContext_Uncontended measures the fast path of

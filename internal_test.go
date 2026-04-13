@@ -5,6 +5,43 @@ import (
 	"testing"
 )
 
+// TestList_RemoveClearsFields verifies that a normal remove clears
+// every pointer field on the element before putting it back into the
+// pool. Missing any of these clears would leak the removed
+// element's references (next/prev/list/value) into whichever goroutine
+// later Gets the element from the pool — a potential source of
+// dangling references or cross-waiter bugs.
+func TestList_RemoveClearsFields(t *testing.T) {
+	var l list
+	w1 := waiter(make(chan struct{}, 1))
+	w2 := waiter(make(chan struct{}, 1))
+	e1 := l.pushBackElem(w1)
+	e2 := l.pushBackElem(w2)
+
+	l.remove(e1)
+
+	if e1.next != nil {
+		t.Error("e1.next not cleared after remove")
+	}
+	if e1.prev != nil {
+		t.Error("e1.prev not cleared after remove")
+	}
+	if e1.list != nil {
+		t.Error("e1.list not cleared after remove")
+	}
+	if e1.value != nil {
+		t.Error("e1.value not cleared after remove")
+	}
+
+	// The rest of the list must be intact.
+	if l.len != 1 {
+		t.Errorf("len = %d after remove, want 1", l.len)
+	}
+	if l.front() != e2 {
+		t.Error("front should be e2 after removing e1")
+	}
+}
+
 // TestList_RemoveIsIdempotent locks in the hardening added to
 // list.remove: calling remove on an element that is not currently in
 // the list must be a safe no-op. Without the early-return guard, a

@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -164,6 +165,81 @@ func TestMutex_UnlockFromDifferentGoroutine(t *testing.T) {
 	case <-acquired:
 	case <-time.After(2 * time.Second):
 		t.Fatal("cross-goroutine unlock left mutex unacquirable")
+	}
+}
+
+// TestMutex_RecoverFromDoubleUnlockPanic verifies the central claim
+// of the locked-bool refactor: unlike sync.Mutex, recovering from a
+// double-unlock panic leaves the Mutex in a normally-unlocked state
+// so subsequent Lock/Unlock cycles succeed.
+//
+// This is load-bearing for the Unlock doc comment's recover-safety
+// guarantee.
+func TestMutex_RecoverFromDoubleUnlockPanic(t *testing.T) {
+	var mu fifomu.Mutex
+
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("expected panic from double-unlock")
+			}
+			if msg, ok := r.(string); !ok || msg != "sync: unlock of unlocked mutex" {
+				t.Fatalf("unexpected panic value: %T %v", r, r)
+			}
+		}()
+		mu.Unlock()
+	}()
+
+	// After recover, the mutex should be usable.
+	mu.Lock()
+	mu.Unlock() //nolint:staticcheck // acquire-then-release is the assertion
+
+	// And usable repeatedly.
+	mu.Lock()
+	if !mu.TryLock() {
+		// TryLock should fail (lock is held).
+	} else {
+		t.Fatal("TryLock succeeded on a held mutex after recover")
+	}
+	mu.Unlock()
+}
+
+// TestMutex_ConcurrentDoubleUnlock documents the outcome when two
+// goroutines race to Unlock a once-locked Mutex (caller misuse).
+// Exactly one must succeed and exactly one must panic with the
+// stdlib-compatible message. The inner mutex serializes them, so
+// the outcome is deterministic even though the order isn't.
+func TestMutex_ConcurrentDoubleUnlock(t *testing.T) {
+	const iters = 50
+	for range iters {
+		var mu fifomu.Mutex
+		mu.Lock()
+
+		var panicked, succeeded atomic.Int32
+		var wg sync.WaitGroup
+		for range 2 {
+			wg.Go(func() {
+				defer func() {
+					if r := recover(); r != nil {
+						msg, _ := r.(string)
+						if msg == "sync: unlock of unlocked mutex" {
+							panicked.Add(1)
+						} else {
+							t.Errorf("unexpected panic: %v", r)
+						}
+						return
+					}
+					succeeded.Add(1)
+				}()
+				mu.Unlock()
+			})
+		}
+		wg.Wait()
+
+		if p, s := panicked.Load(), succeeded.Load(); p != 1 || s != 1 {
+			t.Fatalf("expected 1 panic + 1 success, got panics=%d successes=%d", p, s)
+		}
 	}
 }
 
