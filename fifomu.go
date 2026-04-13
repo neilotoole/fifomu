@@ -80,7 +80,7 @@ func (m *Mutex) Lock() {
 	m.waiters.pushBack(w)
 	m.mu.Unlock()
 
-	<-w
+	w.wait()
 	waiterPool.Put(w)
 }
 
@@ -116,21 +116,19 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 	case <-ctx.Done():
 		err := context.Cause(ctx)
 		m.mu.Lock()
-		select {
-		case <-w:
+		if w.tryDrain() {
 			// Acquired the lock after we were canceled. Rather than
 			// trying to fix up the queue, just pretend we didn't notice
 			// the cancellation.
 			err = nil
-		default:
+		} else {
 			m.waiters.remove(elem)
 		}
 		m.mu.Unlock()
-		// Put w back outside the critical section — both inner
-		// branches leave w in the pool-safe "empty buffer, no other
-		// referrer" state, and sync.Pool is concurrency-safe, so
-		// holding m.mu here would only serialize the pool op
-		// against other Lock/Unlock callers for no benefit.
+		// Put w back outside the critical section — sync.Pool is
+		// concurrency-safe, and both branches above leave w with an
+		// empty buffer, so holding m.mu here would serialize pool
+		// ops against other Lock/Unlock callers for no benefit.
 		waiterPool.Put(w)
 		return err
 
@@ -185,26 +183,34 @@ func (m *Mutex) notifyWaiters() {
 	if next == nil || m.locked {
 		return
 	}
-
 	w := next.value
 	m.locked = true
 	m.waiters.remove(next)
+	w.signal()
+}
 
-	// Every pooled waiter channel enters the pool with an empty buffer:
-	// every success path receives from it before returning it, and the
-	// LockContext cancel-default path removes the waiter from the queue
-	// without ever signaling it. While we hold m.mu here, no other
-	// goroutine can signal w either. So the buffered(1) send below must
-	// succeed without blocking.
-	//
-	// We do this as a select-with-default so that any future change
-	// that accidentally violates the invariant fails loudly instead of
-	// reintroducing the pre-fix deadlock: on master, notifyWaiters sent
-	// on an unbuffered channel, and a LockContext caller whose ctx
-	// fired concurrently would commit to the ctx.Done branch, leave
-	// us parked on the send, and then block on m.mu.Lock(). Deadlock
-	// between the parked sender and the canceling receiver — with
-	// every subsequent Lock caller piling up behind m.mu.
+var waiterPool = sync.Pool{New: func() any { return waiter(make(chan struct{}, 1)) }}
+
+// waiter is a single-slot handoff channel used to notify a queued
+// goroutine that it has acquired the mutex. waiterPool produces and
+// recycles these; every code path that returns a waiter to the pool
+// guarantees its buffer is empty.
+type waiter chan struct{}
+
+// signal delivers a lock-acquired handoff to w. Must be called with
+// Mutex.mu held, and w's buffer must be empty at call time — both
+// invariants are maintained by the mutex protocol and every
+// waiterPool return path.
+//
+// signal uses a non-blocking send (select-with-default) so that any
+// future change which violates the pool invariant fails loudly with
+// a panic, instead of reintroducing the pre-fix deadlock: on master,
+// notifyWaiters sent on an unbuffered channel, and a LockContext
+// caller whose ctx fired concurrently would commit to the ctx.Done
+// branch, leaving us parked on the send while still holding m.mu —
+// deadlocking the canceling receiver and every subsequent Lock
+// caller piling up behind m.mu.
+func (w waiter) signal() {
 	select {
 	case w <- struct{}{}:
 	default:
@@ -212,6 +218,24 @@ func (m *Mutex) notifyWaiters() {
 	}
 }
 
-var waiterPool = sync.Pool{New: func() any { return waiter(make(chan struct{}, 1)) }}
+// wait blocks until signal is called on w. Used by Lock, which has
+// no cancellation channel to watch. LockContext cannot use this
+// directly — it needs to select on ctx.Done too — so it writes
+// `case <-w:` inline instead.
+func (w waiter) wait() {
+	<-w
+}
 
-type waiter chan struct{}
+// tryDrain non-blockingly receives any pending signal on w,
+// returning true if one was consumed. Used by LockContext's cancel
+// handler to distinguish "ctx fired before signal" (false, remove
+// from queue and return the ctx error) from "signal raced with
+// ctx cancel" (true, accept the lock and return nil).
+func (w waiter) tryDrain() bool {
+	select {
+	case <-w:
+		return true
+	default:
+		return false
+	}
+}
