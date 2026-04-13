@@ -16,7 +16,7 @@ import (
 // consistent); TestList_RemoveDoesNotDoublePool below catches the
 // specific pool-poisoning regression.
 func TestList_RemoveIsIdempotent(t *testing.T) {
-	var l list[waiter]
+	var l list
 	w1 := waiter(make(chan struct{}, 1))
 	w2 := waiter(make(chan struct{}, 1))
 	w3 := waiter(make(chan struct{}, 1))
@@ -49,7 +49,7 @@ func TestList_RemoveIsIdempotent(t *testing.T) {
 	}
 
 	// Remove of an element that was never inserted is also a no-op.
-	orphan := &element[waiter]{}
+	orphan := &element{}
 	l.remove(orphan)
 	if l.len != 2 {
 		t.Fatalf("len after remove(orphan) = %d, want 2", l.len)
@@ -76,7 +76,7 @@ func TestList_RemoveIsIdempotent(t *testing.T) {
 // "seen == 0" outcome is acceptable (the pool didn't yield our
 // element at all). The regression signal is seen > 1.
 func TestList_RemoveDoesNotDoublePool(t *testing.T) {
-	var l list[waiter]
+	var l list
 	w := waiter(make(chan struct{}, 1))
 	e := l.pushBackElem(w)
 
@@ -87,7 +87,7 @@ func TestList_RemoveDoesNotDoublePool(t *testing.T) {
 	// chance that a later Get happens to miss our element.
 	const N = 100
 	for range N {
-		elementPool.Put(&element[waiter]{})
+		elementPool.Put(&element{})
 	}
 
 	// Double-remove: with the hardening, this is a no-op; without it,
@@ -97,7 +97,7 @@ func TestList_RemoveDoesNotDoublePool(t *testing.T) {
 	// Drain the pool aggressively and count occurrences of e.
 	seen := 0
 	for range N + 50 {
-		got := elementPool.Get().(*element[waiter])
+		got := elementPool.Get().(*element)
 		if got == e {
 			seen++
 		}

@@ -50,7 +50,7 @@ var _ sync.Locker = (*Mutex)(nil)
 type Mutex struct {
 	_ noCopy
 
-	waiters list[waiter]
+	waiters list
 	locked  bool
 	mu      sync.Mutex
 }
