@@ -109,13 +109,18 @@ The benchmarks compare three mutex implementations:
  [`semaphore.Weighted`](https://pkg.go.dev/golang.org/x/sync/semaphore); it
  exists only in the test code, as a comparison baseline.
 
-Across contended benchmarks, `fifomu` runs roughly 1.3×–2.8× slower than
-`sync.Mutex` (`BenchmarkMutex` and `BenchmarkMutexSlack` near the low end,
-`BenchmarkMutexNoSpin` near the high end). The outlier is
-`BenchmarkMutexSpin`, where `fifomu` is ~6.5× slower. On the plus side,
-`fifomu` is always faster than the baseline `semaphoreMu` implementation,
-and unlike that baseline, calls to `fifomu`'s `Mutex.Lock` method do not
+Across contended benchmarks, `fifomu.Mutex.Lock` runs roughly 1.3×–3.5×
+slower than `sync.Mutex` (`BenchmarkMutex` and `BenchmarkMutexSlack` near
+the low end, `BenchmarkMutexNoSpin` at the high end). The outlier is
+`BenchmarkMutexSpin`, where `fifomu` is ~6.5× slower. `fifomu` is always
+faster than the baseline `semaphoreMu` implementation, and unlike that
+baseline, calls to `fifomu`'s `Lock` and `LockContext` methods do not
 allocate.
+
+`LockContext` adds a ~3-10% per-call overhead over `Lock` on contended
+paths (the ctx channel added to the select). Its cancel handler is
+~55% the cost of a contended `Lock` and is fully allocation-free —
+pooled waiter channels are recycled so cancel cycles don't heap-allocate.
 
 Benchmark your own workload before committing to `fifomu.Mutex`. In many
 cases you will be able to design around the need for FIFO lock acquisition.
@@ -128,27 +133,30 @@ goos: darwin
 goarch: arm64
 pkg: github.com/neilotoole/fifomu
 cpu: Apple M1 Max
-BenchmarkMutexUncontended/stdlib-10         652553979          1.902 ns/op    0 B/op   0 allocs/op
-BenchmarkMutexUncontended/fifomu-10         318887648          4.731 ns/op    0 B/op   0 allocs/op
-BenchmarkMutexUncontended/semaphoreMu-10    332533878          3.260 ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/stdlib-10                      9594367        127.1   ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/fifomu-10                      7475685        160.0   ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/semaphoreMu-10                 5432120        224.9   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexSlack/stdlib-10                10897606        101.5   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSlack/fifomu-10                 6567987        167.1   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSlack/semaphoreMu-10            4994701        262.4   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexWork/stdlib-10                  9939190        135.4   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWork/fifomu-10                  5911956        202.4   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWork/semaphoreMu-10             4623722        269.5   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexWorkSlack/stdlib-10            10335938        110.1   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWorkSlack/fifomu-10             6095788        193.9   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWorkSlack/semaphoreMu-10        4360573        277.5   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexNoSpin/stdlib-10                8617663        148.4   ns/op   12 B/op   0 allocs/op
-BenchmarkMutexNoSpin/fifomu-10                2890854        415.4   ns/op   12 B/op   0 allocs/op
-BenchmarkMutexNoSpin/semaphoreMu-10           2581249        465.0   ns/op   55 B/op   1 allocs/op
-BenchmarkMutexSpin/stdlib-10                  5219571        360.0   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSpin/fifomu-10                   514402       2339     ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSpin/semaphoreMu-10              483753       2472     ns/op  175 B/op   2 allocs/op
+BenchmarkLockContext_Uncontended-10        349898984          3.457 ns/op    0 B/op   0 allocs/op
+BenchmarkLockContext_Contended-10            6611028        191.8   ns/op    0 B/op   0 allocs/op
+BenchmarkLockContext_Cancel-10              13624764         88.34  ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/stdlib-10        696781160          1.793 ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/fifomu-10        335351145          3.603 ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/semaphoreMu-10   305443803          3.504 ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/stdlib-10                     9246698        123.9   ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/fifomu-10                     7253898        163.1   ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/semaphoreMu-10                5127471        230.3   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexSlack/stdlib-10               10402440        113.9   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSlack/fifomu-10                7020883        175.0   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSlack/semaphoreMu-10           4795321        263.8   ns/op  176 B/op   3 allocs/op
+BenchmarkMutexWork/stdlib-10                 9208046        132.7   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWork/fifomu-10                 5993347        200.8   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWork/semaphoreMu-10            4378946        277.6   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexWorkSlack/stdlib-10           10696843        111.9   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWorkSlack/fifomu-10            5888556        201.2   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWorkSlack/semaphoreMu-10       4249790        298.9   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexNoSpin/stdlib-10               6842372        183.0   ns/op   12 B/op   0 allocs/op
+BenchmarkMutexNoSpin/fifomu-10               2220228        647.6   ns/op   12 B/op   0 allocs/op
+BenchmarkMutexNoSpin/semaphoreMu-10          1978136        570.3   ns/op   56 B/op   1 allocs/op
+BenchmarkMutexSpin/stdlib-10                 3180140        369.1   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSpin/fifomu-10                  493010       2404     ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSpin/semaphoreMu-10             478358       2511     ns/op  175 B/op   2 allocs/op
 ```
 
 ## Related

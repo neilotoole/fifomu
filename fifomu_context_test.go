@@ -395,3 +395,59 @@ func TestTryLock_RefusesWhileWaiterQueued(t *testing.T) {
 	close(done)
 	mu.Unlock()
 }
+
+// BenchmarkLockContext_Uncontended measures the fast path of
+// LockContext with each parallel worker holding its own mutex
+// (no cross-goroutine contention). Direct comparison with
+// BenchmarkMutexUncontended/fifomu shows LockContext's per-call
+// overhead vs plain Lock.
+func BenchmarkLockContext_Uncontended(b *testing.B) {
+	b.ReportAllocs()
+	ctx := context.Background()
+	b.RunParallel(func(pb *testing.PB) {
+		var mu fifomu.Mutex
+		for pb.Next() {
+			_ = mu.LockContext(ctx)
+			mu.Unlock()
+		}
+	})
+}
+
+// BenchmarkLockContext_Contended runs parallel LockContext
+// callers contending on the same mutex, with no cancellation.
+// This measures the queue+signal round-trip through the
+// buffered waiter channel. Compare directly to
+// BenchmarkMutex/fifomu — any large gap would indicate that
+// LockContext's slow path carries overhead beyond Lock's.
+func BenchmarkLockContext_Contended(b *testing.B) {
+	b.ReportAllocs()
+	var mu fifomu.Mutex
+	ctx := context.Background()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_ = mu.LockContext(ctx)
+			mu.Unlock()
+		}
+	})
+}
+
+// BenchmarkLockContext_Cancel measures the slow-path cancel
+// handler. The mutex is held for the entire benchmark, forcing
+// every LockContext call through queue-then-cancel-then-dequeue.
+// A shared pre-canceled context is reused across iterations to
+// isolate fifomu's allocations from context.WithCancel's.
+// Serial (not RunParallel) because only one goroutine can be
+// in the cancel path at a time under this construction.
+func BenchmarkLockContext_Cancel(b *testing.B) {
+	b.ReportAllocs()
+	var mu fifomu.Mutex
+	mu.Lock()
+	defer mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for b.Loop() {
+		_ = mu.LockContext(ctx)
+	}
+}
