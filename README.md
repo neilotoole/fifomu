@@ -125,7 +125,7 @@ In both cases, callers that require ctx-strict behavior should re-check
 Internally, `fifomu.Mutex` is a `sync.Mutex` plus a FIFO queue of waiters:
 
 - **Uncontended acquires** take the inner mutex briefly, flip a `locked`
-  bool, and return. This is ~3–5 ns/op and allocation-free.
+  bool, and return. See `BenchmarkLockContext_Uncontended` / `BenchmarkMutexUncontended/fifomu` for current cost; allocation-free.
 - **When the mutex is held**, a caller appends itself to the waiter queue
   — a pooled doubly-linked list of buffered(1) channels — and blocks on
   its own channel.
@@ -143,7 +143,8 @@ Buffered(1) channels (rather than unbuffered) are load-bearing: the
 so a racing cancellation on the `LockContext` side cannot strand the
 sender. Violating that invariant (enqueuing a non-empty channel)
 triggers a panic rather than silently reintroducing a deadlock; this is
-enforced in `notifyWaiters` and tested by `TestNotifyWaiters_PanicsOnViolatedInvariant`.
+enforced in `waiter.signal` (called from `notifyWaiters`) and tested by
+`TestNotifyWaiters_PanicsOnViolatedInvariant`.
 
 
 ## Testing and correctness
@@ -196,10 +197,12 @@ faster than the baseline `semaphoreMu` implementation, and unlike that
 baseline, calls to `fifomu`'s `Lock` and `LockContext` methods do not
 allocate.
 
-`LockContext` adds a ~3-10% per-call overhead over `Lock` on contended
-paths (the extra `ctx.Done()` arm in the select). Its cancel handler is
-~55% the cost of a contended `Lock` and is fully allocation-free —
-pooled waiter channels are recycled so cancel cycles don't heap-allocate.
+`LockContext` adds a small per-call overhead over `Lock` on contended
+paths — the table below shows roughly 15–20% for `BenchmarkLockContext_Contended`
+vs `BenchmarkMutex/fifomu` (the extra `ctx.Done()` arm in the select).
+Its cancel handler runs in roughly half the time of a contended `Lock`
+and is fully allocation-free — pooled waiter channels are recycled so
+cancel cycles don't heap-allocate.
 
 Benchmark your own workload before committing to `fifomu.Mutex`. In many
 cases you can design around the need for FIFO lock acquisition — reaching
@@ -219,9 +222,12 @@ Benchmark name shapes (inherited from the stdlib `sync/mutex_test.go`):
 - `Work` — like `Mutex` but with a short busy-loop in each critical
   section.
 - `WorkSlack` — combines both.
-- `NoSpin` — simulates a workload where spinning in the mutex is
-  unprofitable; `fifomu` doesn't spin, so the gap is smaller here.
-- `Spin` — simulates a workload where spinning *would* be profitable;
+- `NoSpin` — models a workload where the stdlib's adaptive spin is
+  unprofitable. In practice the stdlib still spins some (hence its
+  higher allocation-per-op), and `fifomu`'s forced scheduler handoff
+  on every acquire still costs more, so the gap here is larger than
+  the basic `BenchmarkMutex` (roughly 3.5× vs 1.3×).
+- `Spin` — models a workload where spinning *would* be profitable;
   `fifomu` can't spin, which is the fundamental reason it loses worst
   on this one.
 - `LockContext_*` — adapts the shapes to `LockContext`, plus a `Cancel`
