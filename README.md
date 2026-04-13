@@ -15,15 +15,15 @@ lock waiter goroutines (that is, until after a 1ms starvation threshold, at
 which point `sync.Mutex` enters a FIFO "starvation mode" for those starved
 waiters, but that's too late for some use cases).
 
-`fifomu.Mutex` implements the exported methods of `sync.Mutex` and thus is
-a drop-in replacement (and by extension, also implements [`sync.Locker`](https://pkg.go.dev/sync#Locker)).
+`fifomu.Mutex` implements the exported methods of `sync.Mutex` and is
+API-compatible with it (and by extension implements [`sync.Locker`](https://pkg.go.dev/sync#Locker)).
 It also provides a bonus context-aware [`LockContext`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.LockContext)
 method.
 
 > **FIFO caveat.** FIFO ordering applies to goroutines that have been queued
 > as waiters. Arrival order across goroutines simultaneously contending for
-> the internal state protecting the waiter queue is not guaranteed: a
-> goroutine that called `Lock` slightly later may enqueue slightly earlier.
+> the internal `sync.Mutex` that protects the waiter queue is not guaranteed:
+> a goroutine that called `Lock` slightly later may enqueue slightly earlier.
 > The reordering window is bounded by the duration of the critical section
 > that adds a waiter to the queue. If you need strict arrival-order
 > semantics, you will need a different primitive (e.g., a ticket lock
@@ -38,6 +38,29 @@ Note: unless you need the FIFO behavior, you should prefer `sync.Mutex`.
 For typical workloads, its "greedy-relock" behavior requires less goroutine
 switching and yields better performance. See the [benchmarks](#benchmarks)
 section below.
+
+
+## When to use
+
+`fifomu.Mutex` is useful when arrival-order fairness among contending
+goroutines is a correctness property, not just a performance one. Concrete
+examples:
+
+- **Streaming fan-out.** A single producer writes bytes to a shared buffer;
+  many consumers read from it. Each consumer needs the next chunk in the
+  order it arrived at the read point, not whichever one the scheduler
+  happens to favor. [`streamcache`](https://github.com/neilotoole/streamcache)
+  uses `fifomu` to serialize readers this way.
+- **Rate-limited work queues where ordering matters.** If 20 goroutines
+  block on the same lock and each performs a few milliseconds of work,
+  `sync.Mutex` may hand the lock back to the same goroutine multiple times
+  before some waiters ever run. `fifomu.Mutex` distributes more evenly.
+- **Test/debug scaffolding** where deterministic acquire order simplifies
+  reasoning about which goroutine sees what state.
+
+If your code doesn't care who acquires the lock next — which is the common
+case — use `sync.Mutex`. It's simpler, faster, and the starvation-mode
+fallback at 1ms is usually good enough.
 
 
 ## Usage
@@ -96,6 +119,62 @@ Two caveats for `LockContext`:
 In both cases, callers that require ctx-strict behavior should re-check
 `ctx.Err()` after acquiring.
 
+
+## How it works
+
+Internally, `fifomu.Mutex` is a `sync.Mutex` plus a FIFO queue of waiters:
+
+- **Uncontended acquires** take the inner mutex briefly, flip a `locked`
+  bool, and return. This is ~3–5 ns/op and allocation-free.
+- **When the mutex is held**, a caller appends itself to the waiter queue
+  — a pooled doubly-linked list of buffered(1) channels — and blocks on
+  its own channel.
+- **Unlock** walks the queue head, flips `locked`, and delivers a
+  non-blocking send on the chosen waiter's channel. No spinning.
+- **`LockContext`** adds a `<-ctx.Done()` arm to the block. If `ctx`
+  fires before the signal, a cancel handler re-acquires the inner mutex,
+  dequeues the waiter, and returns `context.Cause(ctx)`.
+- **Every happy path and every cancel path** returns the waiter channel
+  to a `sync.Pool` with its buffer empty, so `Lock` and `LockContext` are
+  allocation-free in steady state.
+
+Buffered(1) channels (rather than unbuffered) are load-bearing: the
+`Unlock` side sends non-blockingly while still holding the inner mutex,
+so a racing cancellation on the `LockContext` side cannot strand the
+sender. Violating that invariant (enqueuing a non-empty channel)
+triggers a panic rather than silently reintroducing a deadlock; this is
+enforced in `notifyWaiters` and tested by `TestNotifyWaiters_PanicsOnViolatedInvariant`.
+
+
+## Testing and correctness
+
+`fifomu` is a concurrency primitive, so every change is validated under
+the race detector:
+
+```shell
+go test -race -count=3 ./...
+```
+
+The test binary exercises:
+
+- An adapted port of Go's stdlib `sync/mutex_test.go` (`TestMutex`,
+  `TestMutexFairness`, etc.).
+- A regression test for the `LockContext`/`Unlock` cancellation deadlock
+  that the initial implementation shipped with. Under the old unbuffered-
+  channel design, the test fails within seconds.
+- Invariant tests: queue ordering under mixed `Lock`/`LockContext`,
+  middle-of-queue cancel, cross-goroutine `Unlock`, idempotent
+  `list.remove`, and the exact panic messages matching `sync.Mutex`.
+- A chaos test: 20 goroutines for 2 seconds, each picking a random
+  operation, with an atomic counter asserting at most one holder at a
+  time.
+- [`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak) in
+  `TestMain`: any goroutine left running after the test binary exits
+  fails the run.
+
+No data races or goroutine leaks are tolerated.
+
+
 ## Benchmarks
 
 The benchmark results below were obtained on a 2021 MacBook Pro (M1 Max)
@@ -118,14 +197,35 @@ baseline, calls to `fifomu`'s `Lock` and `LockContext` methods do not
 allocate.
 
 `LockContext` adds a ~3-10% per-call overhead over `Lock` on contended
-paths (the ctx channel added to the select). Its cancel handler is
+paths (the extra `ctx.Done()` arm in the select). Its cancel handler is
 ~55% the cost of a contended `Lock` and is fully allocation-free —
 pooled waiter channels are recycled so cancel cycles don't heap-allocate.
 
 Benchmark your own workload before committing to `fifomu.Mutex`. In many
-cases you will be able to design around the need for FIFO lock acquisition.
-It's a bit of a code smell to begin with, but, that said, sometimes it's the
-most straightforward solution.
+cases you can design around the need for FIFO lock acquisition — reaching
+for it should prompt a pause to check whether a different coordination
+primitive (a channel, a bounded work queue, `sync.Cond`) would be a better
+fit. But when FIFO semantics are what you genuinely need, `fifomu` is the
+most straightforward path.
+
+Benchmark name shapes (inherited from the stdlib `sync/mutex_test.go`):
+
+- `Uncontended` — parallel workers, each with its own mutex. Measures
+  raw fast-path cost.
+- `Mutex` — parallel workers contending on one mutex. The baseline
+  contended workload.
+- `Slack` — like `Mutex` but with 10× goroutines over GOMAXPROCS, which
+  forces heavier queueing.
+- `Work` — like `Mutex` but with a short busy-loop in each critical
+  section.
+- `WorkSlack` — combines both.
+- `NoSpin` — simulates a workload where spinning in the mutex is
+  unprofitable; `fifomu` doesn't spin, so the gap is smaller here.
+- `Spin` — simulates a workload where spinning *would* be profitable;
+  `fifomu` can't spin, which is the fundamental reason it loses worst
+  on this one.
+- `LockContext_*` — adapts the shapes to `LockContext`, plus a `Cancel`
+  variant exercising the slow-path cancel handler.
 
 ```
 $ GOMAXPROCS=10 go test -bench . -benchmem -run=^$
@@ -158,6 +258,17 @@ BenchmarkMutexSpin/stdlib-10                 3180140        369.1   ns/op    0 B
 BenchmarkMutexSpin/fifomu-10                  493010       2404     ns/op    0 B/op   0 allocs/op
 BenchmarkMutexSpin/semaphoreMu-10             478358       2511     ns/op  175 B/op   2 allocs/op
 ```
+
+## Requirements
+
+- **Go 1.26 or later.** The package is generic-free, but the tests and
+  benchmarks use `for b.Loop()` (Go 1.24+) and `sync.WaitGroup.Go`
+  (Go 1.25+).
+- **Runtime dependencies:** [`golang.org/x/sync`](https://pkg.go.dev/golang.org/x/sync),
+  and that is used only by the test baselines — `fifomu.Mutex` itself
+  depends only on the standard library (`context` and `sync`).
+- **Test-only dependency:** [`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak).
+
 
 ## Related
 

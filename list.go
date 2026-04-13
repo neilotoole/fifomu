@@ -13,6 +13,9 @@ type list struct {
 	len  int
 }
 
+// lazyInit initializes the root sentinel the first time the list is
+// used. Sharing a zero-value list is allowed; the first push triggers
+// the init, subsequent pushes are no-ops on this path.
 func (l *list) lazyInit() {
 	if l.root.next == nil {
 		l.root.next = &l.root
@@ -41,6 +44,11 @@ func (l *list) pushBackElem(v waiter) *element {
 }
 
 // pushBack inserts a new element with value v at the back of list l.
+//
+// Callers that may need to later remove the element (e.g., LockContext
+// on ctx.Done) should use pushBackElem instead to obtain the element
+// pointer; pushBack is for callers that only ever dequeue from the
+// front (e.g., Lock, which waits for its signal and never cancels).
 func (l *list) pushBack(v waiter) {
 	l.pushBackElem(v)
 }
@@ -79,6 +87,12 @@ func (l *list) insert(e, at *element) {
 // element is a node of a linked list of waiters.
 type element struct {
 	next, prev *element
-	list       *list
-	value      waiter
+
+	// list is a back-pointer to the owning list. remove compares
+	// e.list to its argument: if they differ (element never inserted,
+	// or already removed), remove is a no-op, preventing a double-Put
+	// into elementPool. Cleared by remove.
+	list *list
+
+	value waiter
 }

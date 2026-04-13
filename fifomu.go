@@ -10,19 +10,36 @@
 // "starvation mode" for those starved waiters, but that's too late for some
 // use cases).
 //
-// fifomu.Mutex implements the exported methods of sync.Mutex and thus is
-// a drop-in replacement (and by extension also implements sync.Locker).
-// It also provides a bonus context-aware Mutex.LockContext method.
+// fifomu.Mutex is API-compatible with sync.Mutex (it implements sync.Locker
+// and provides the same TryLock/Lock/Unlock methods) and adds a
+// context-aware Mutex.LockContext method. Note one deliberate semantic
+// difference from sync.Mutex: Mutex.TryLock fails whenever the waiter queue
+// is non-empty, so that TryLock cannot jump ahead of FIFO-queued waiters.
+// See Mutex.TryLock for details.
+//
+// # FIFO guarantee
 //
 // FIFO ordering applies to goroutines that have been queued as waiters.
 // Arrival order across goroutines simultaneously contending for the internal
-// state protecting the waiter queue is not guaranteed: a goroutine that
-// called Lock slightly later may enqueue slightly earlier. The reordering
-// window is bounded by the duration of the critical section that adds a
-// waiter to the queue.
+// sync.Mutex that protects the waiter queue is not guaranteed: a goroutine
+// that called Lock slightly later may enqueue slightly earlier. The
+// reordering window is bounded by the duration of the critical section
+// that adds a waiter to the queue.
 //
-// Note: unless you need the FIFO behavior, you should prefer sync.Mutex.
-// For typical workloads, its "greedy-relock" behavior requires less goroutine
+// # How it works
+//
+// Internally, a Mutex is a sync.Mutex plus a FIFO queue of waiters. Each
+// waiter is a buffered(1) channel drawn from a sync.Pool. An unlocker walks
+// the queue head, flips its own locked flag, and signals exactly one
+// waiter by a non-blocking send. No spinning. LockContext adds a select arm
+// on ctx.Done() and a cancel handler that walks the list to dequeue.
+// Every happy path and every cancel path returns the waiter to the pool
+// empty, so Lock and LockContext are allocation-free in steady state.
+//
+// # When to prefer sync.Mutex
+//
+// Unless you need the FIFO behavior, prefer sync.Mutex. For typical
+// workloads, its "greedy-relock" behavior requires less goroutine
 // switching and yields better performance.
 package fifomu
 
@@ -160,6 +177,14 @@ func (m *Mutex) TryLock() bool {
 // A locked Mutex is not associated with a particular goroutine.
 // It is allowed for one goroutine to lock a Mutex and then
 // arrange for another goroutine to unlock it.
+//
+// Unlike sync.Mutex, Unlock checks its state before mutating it,
+// so a Mutex survives recover from the double-unlock panic as a
+// normally-unlocked mutex. (sync.Mutex decrements before checking
+// and leaves the mutex in a permanently corrupt state after
+// recovery.) Callers still should not recover from mutex panics —
+// it almost always indicates a real logic bug — but if they do,
+// the Mutex is usable afterwards.
 func (m *Mutex) Unlock() {
 	m.mu.Lock()
 	if !m.locked {
@@ -204,12 +229,14 @@ type waiter chan struct{}
 //
 // signal uses a non-blocking send (select-with-default) so that any
 // future change which violates the pool invariant fails loudly with
-// a panic, instead of reintroducing the pre-fix deadlock: on master,
-// notifyWaiters sent on an unbuffered channel, and a LockContext
-// caller whose ctx fired concurrently would commit to the ctx.Done
-// branch, leaving us parked on the send while still holding m.mu —
-// deadlocking the canceling receiver and every subsequent Lock
-// caller piling up behind m.mu.
+// a panic, rather than reintroducing a historical deadlock: an
+// earlier version of this package used an unbuffered channel for
+// the handoff, and a LockContext caller whose ctx fired concurrently
+// with the send would commit to the ctx.Done branch of its outer
+// select, leaving this sender parked on w while still holding
+// Mutex.mu — deadlocking the canceling receiver (which waits on
+// Mutex.mu to inspect w) and every subsequent Lock caller piling
+// up behind Mutex.mu.
 func (w waiter) signal() {
 	select {
 	case w <- struct{}{}:
