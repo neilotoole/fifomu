@@ -24,9 +24,10 @@ method.
 > as waiters. Arrival order across goroutines simultaneously contending for
 > the internal state protecting the waiter queue is not guaranteed: a
 > goroutine that called `Lock` slightly later may enqueue slightly earlier.
-> In practice this reordering window is limited to the brief critical section
-> protecting the queue itself (microseconds under typical load). If you need
-> strict arrival-order semantics, consider a ticket lock.
+> The reordering window is bounded by the duration of the critical section
+> that adds a waiter to the queue. If you need strict arrival-order
+> semantics, you will need a different primitive (e.g., a ticket lock
+> keyed by an atomically-incremented arrival counter).
 
 > **`TryLock` deviation from `sync.Mutex`.** `fifomu.Mutex.TryLock` reports
 > failure whenever the waiter queue is non-empty, even if the mutex is
@@ -108,11 +109,13 @@ The benchmarks compare three mutex implementations:
  [`semaphore.Weighted`](https://pkg.go.dev/golang.org/x/sync/semaphore); it
  exists only in the test code, as a comparison baseline.
 
-Across contended benchmarks, `fifomu` runs roughly 1.3×–1.8× slower than
-`sync.Mutex`. The worst case is `BenchmarkMutexSpin`, where `fifomu` is
-~6.5× slower. On the plus side, `fifomu` is always faster than the baseline
-`semaphoreMu` implementation, and unlike that baseline, calls to `fifomu`'s
-`Mutex.Lock` method do not allocate.
+Across contended benchmarks, `fifomu` runs roughly 1.3×–2.8× slower than
+`sync.Mutex` (`BenchmarkMutex` and `BenchmarkMutexSlack` near the low end,
+`BenchmarkMutexNoSpin` near the high end). The outlier is
+`BenchmarkMutexSpin`, where `fifomu` is ~6.5× slower. On the plus side,
+`fifomu` is always faster than the baseline `semaphoreMu` implementation,
+and unlike that baseline, calls to `fifomu`'s `Mutex.Lock` method do not
+allocate.
 
 Benchmark your own workload before committing to `fifomu.Mutex`. In many
 cases you will be able to design around the need for FIFO lock acquisition.

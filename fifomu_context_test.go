@@ -3,6 +3,7 @@ package fifomu_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -217,10 +218,14 @@ func TestLockContext_AcquireAndCancelOutcomes(t *testing.T) {
 // TestLockContext_HammerConcurrent stresses many concurrent LockContext
 // callers with a mix of cancellations to exercise the queue under load.
 func TestLockContext_HammerConcurrent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping hammer test in short mode")
+	}
 	const goroutines = 50
 	const perGoroutine = 200
 	var mu fifomu.Mutex
 	var wg sync.WaitGroup
+	var unexpectedErr atomic.Pointer[error]
 
 	for g := range goroutines {
 		wg.Add(1)
@@ -229,15 +234,17 @@ func TestLockContext_HammerConcurrent(t *testing.T) {
 			for i := range perGoroutine {
 				ctx, cancel := context.WithCancel(context.Background())
 				if (g+i)%5 == 0 {
-					// Cancel shortly after call.
-					time.AfterFunc(time.Microsecond, cancel)
+					// Cancel concurrently — no artificial delay. Scheduler
+					// decides when the cancel lands.
+					go cancel()
 				}
 				err := mu.LockContext(ctx)
 				cancel()
 				if err == nil {
 					mu.Unlock()
 				} else if !errors.Is(err, context.Canceled) {
-					t.Errorf("goroutine %d iter %d: %v", g, i, err)
+					wrapped := fmt.Errorf("goroutine %d iter %d: %w", g, i, err)
+					unexpectedErr.CompareAndSwap(nil, &wrapped)
 					return
 				}
 			}
@@ -252,13 +259,29 @@ func TestLockContext_HammerConcurrent(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("hammer test did not complete within 30s")
 	}
+	if e := unexpectedErr.Load(); e != nil {
+		t.Fatal(*e)
+	}
+}
+
+// waitForWaiters blocks until m has at least n queued waiters, or
+// fails the test after a generous deadline. Replaces sleep-based
+// gating so the FIFO tests don't flake on loaded CI.
+func waitForWaiters(t *testing.T, m *fifomu.Mutex, n uint) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for fifomu.WaitersLen(m) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d queued waiters (have %d)", n, fifomu.WaitersLen(m))
+		}
+		runtime.Gosched()
+	}
 }
 
 // TestMutex_FIFOOrdering verifies that queued waiters acquire the
-// mutex in the order they were queued. Goroutines are started with a
-// gap between them so each finishes enqueuing before the next begins,
-// eliminating inner-mutex reordering (see the FIFO caveat in the
-// package doc).
+// mutex in the order they were queued. Each goroutine is allowed to
+// reach the waiter queue before the next one starts; we observe
+// queue length directly rather than relying on a sleep.
 func TestMutex_FIFOOrdering(t *testing.T) {
 	const N = 10
 	var mu fifomu.Mutex
@@ -274,9 +297,7 @@ func TestMutex_FIFOOrdering(t *testing.T) {
 			order <- i
 			mu.Unlock()
 		}(i)
-		// Generous gap to ensure each goroutine reaches the waiter queue
-		// before the next goroutine starts.
-		time.Sleep(15 * time.Millisecond)
+		waitForWaiters(t, &mu, uint(i+1))
 	}
 
 	mu.Unlock()
@@ -303,25 +324,30 @@ func TestLockContext_FIFOAmongContextWaiters(t *testing.T) {
 
 	ctx := context.Background()
 	order := make(chan int, N)
+	errCh := make(chan error, N)
 	var wg sync.WaitGroup
 	for i := range N {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
 			if err := mu.LockContext(ctx); err != nil {
-				t.Errorf("goroutine %d: %v", i, err)
+				errCh <- fmt.Errorf("goroutine %d: %w", i, err)
 				return
 			}
 			order <- i
 			mu.Unlock()
 		}(i)
-		time.Sleep(15 * time.Millisecond)
+		waitForWaiters(t, &mu, uint(i+1))
 	}
 
 	mu.Unlock()
 	wg.Wait()
 	close(order)
+	close(errCh)
 
+	for err := range errCh {
+		t.Fatal(err)
+	}
 	var got []int
 	for v := range order {
 		got = append(got, v)

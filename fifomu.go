@@ -17,9 +17,9 @@
 // FIFO ordering applies to goroutines that have been queued as waiters.
 // Arrival order across goroutines simultaneously contending for the internal
 // state protecting the waiter queue is not guaranteed: a goroutine that
-// called Lock slightly later may enqueue slightly earlier. In practice this
-// reordering window is limited to the brief critical section protecting the
-// queue itself (microseconds under typical load).
+// called Lock slightly later may enqueue slightly earlier. The reordering
+// window is bounded by the duration of the critical section that adds a
+// waiter to the queue.
 //
 // Note: unless you need the FIFO behavior, you should prefer sync.Mutex.
 // For typical workloads, its "greedy-relock" behavior requires less goroutine
@@ -115,6 +115,11 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 			m.waiters.remove(elem)
 		}
 		m.mu.Unlock()
+		// Put w back outside the critical section — both inner
+		// branches leave w in the pool-safe "empty buffer, no other
+		// referrer" state, and sync.Pool is concurrency-safe, so
+		// holding m.mu here would only serialize the pool op
+		// against other Lock/Unlock callers for no benefit.
 		waiterPool.Put(w)
 		return err
 
@@ -159,6 +164,11 @@ func (m *Mutex) Unlock() {
 
 // notifyWaiters signals the next queued waiter, if any, that it has
 // acquired the mutex. Must be called with m.mu held.
+//
+// Only a single waiter is signaled per call. A binary mutex can release
+// at most one holder at a time, so there is no point looping. (The
+// upstream semaphore.Weighted does loop because a single Release can
+// satisfy several smaller Acquire calls; that does not apply here.)
 func (m *Mutex) notifyWaiters() {
 	next := m.waiters.front()
 	if next == nil || m.cur > 0 {
@@ -169,14 +179,26 @@ func (m *Mutex) notifyWaiters() {
 	m.cur++
 	m.waiters.remove(next)
 
-	// Non-blocking send into the buffered waiter channel. The buffer
-	// is always empty at this point: the waiter's previous holder
-	// drained it before returning the channel to the pool, and no
-	// other goroutine can signal w while we hold m.mu. We must not
-	// use an unbuffered send here — a racing ctx.Done in LockContext
-	// would leave us parked on the send while still holding m.mu,
-	// deadlocking the next caller.
-	w <- struct{}{}
+	// Every pooled waiter channel enters the pool with an empty buffer:
+	// every success path receives from it before returning it, and the
+	// LockContext cancel-default path removes the waiter from the queue
+	// without ever signaling it. While we hold m.mu here, no other
+	// goroutine can signal w either. So the buffered(1) send below must
+	// succeed without blocking.
+	//
+	// We do this as a select-with-default so that any future change
+	// that accidentally violates the invariant fails loudly instead of
+	// reintroducing the pre-fix deadlock: on master, notifyWaiters sent
+	// on an unbuffered channel, and a LockContext caller whose ctx
+	// fired concurrently would commit to the ctx.Done branch, leave
+	// us parked on the send, and then block on m.mu.Lock(). Deadlock
+	// between the parked sender and the canceling receiver — with
+	// every subsequent Lock caller piling up behind m.mu.
+	select {
+	case w <- struct{}{}:
+	default:
+		panic("fifomu: waiter pool invariant violated (channel buffer not empty)")
+	}
 }
 
 var waiterPool = sync.Pool{New: func() any { return waiter(make(chan struct{}, 1)) }}

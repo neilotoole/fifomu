@@ -49,8 +49,10 @@ func (l *list[T]) pushBack(v T) {
 // remove removes e from l if e is an element of list l,
 // and returns e to the element pool. If e is not an
 // element of l, remove is a no-op — in particular, it
-// does not re-pool e, so accidental double-removes
-// cannot hand the same element to two goroutines.
+// does not re-pool e, so an accidental double-remove
+// cannot double-Put the element (which would otherwise
+// cause the pool to yield the same element to two
+// future Get calls).
 func (l *list[T]) remove(e *element[T]) {
 	if e.list != l {
 		return
