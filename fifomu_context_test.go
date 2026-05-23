@@ -168,18 +168,24 @@ func TestLockContext_CancelRaceRegression(t *testing.T) {
 	}
 }
 
-// TestLockContext_AcquireAndCancelOutcomes documents that both the
-// "acquired despite cancel" and "canceled before acquire" outcomes are
-// reachable when the race resolves in the opposite direction. This
-// also exercises the two branches of the ctx.Done inner select.
+// TestLockContext_AcquireAndCancelOutcomes runs the cancel/unlock race
+// and reports the split between the two reachable outcomes: "acquired
+// despite cancel" (the Unlock signal landed in the waiter's buffer
+// before the cancel handler could dequeue it) and "canceled before
+// acquire". Which side wins is timing- and hardware-dependent — on fast
+// machines the signal almost always wins, so neither count is guaranteed
+// nonzero. The test therefore asserts only that every outcome is
+// well-formed (nil or context.Canceled) and that no iteration deadlocks,
+// and logs the split rather than requiring both. The deterministic
+// canceled path is covered by TestLockContext_BlockedCancel.
 func TestLockContext_AcquireAndCancelOutcomes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping stress test in short mode")
 	}
 	const iters = 2000
 	var acquired, canceled int
-	for range iters {
-		func() {
+	for i := range iters {
+		func(i int) {
 			var mu fifomu.Mutex
 			mu.Lock()
 
@@ -196,23 +202,24 @@ func TestLockContext_AcquireAndCancelOutcomes(t *testing.T) {
 			cancel()
 			mu.Unlock()
 
-			err := <-errCh
-			if err == nil {
-				acquired++
-				mu.Unlock()
-			} else {
-				canceled++
+			select {
+			case err := <-errCh:
+				switch {
+				case err == nil:
+					acquired++
+					mu.Unlock()
+				case errors.Is(err, context.Canceled):
+					canceled++
+				default:
+					t.Fatalf("iter %d: unexpected error: %v", i, err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("deadlock at iter %d", i)
 			}
-		}()
+		}(i)
 	}
 
 	t.Logf("outcomes: acquired=%d, canceled=%d", acquired, canceled)
-	if acquired == 0 {
-		t.Error("never observed the acquired-after-cancel outcome")
-	}
-	if canceled == 0 {
-		t.Error("never observed the canceled outcome")
-	}
 }
 
 // TestLockContext_HammerConcurrent stresses many concurrent LockContext
