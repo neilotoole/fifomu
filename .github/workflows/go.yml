@@ -17,6 +17,13 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Use bash on every runner (incl. Windows, where it ships via Git Bash) so
+# `run:` commands parse identically. PowerShell mangles args like
+# -coverprofile=coverage.out, splitting them into bogus package paths.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   lint:
     runs-on: ubuntu-latest
