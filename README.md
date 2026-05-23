@@ -270,8 +270,8 @@ BenchmarkMutexSpin/semaphoreMu-10             478358       2511     ns/op  175 B
 - **Go 1.26 or later.** The package is generic-free, but the tests and
   benchmarks use `for b.Loop()` (Go 1.24+) and `sync.WaitGroup.Go`
   (Go 1.25+).
-- **Runtime dependencies:** [`golang.org/x/sync`](https://pkg.go.dev/golang.org/x/sync),
-  and that is used only by the test baselines — `fifomu.Mutex` itself
+- **Non-stdlib dependency (tests only):** [`golang.org/x/sync`](https://pkg.go.dev/golang.org/x/sync),
+  used only by the benchmark baselines — `fifomu.Mutex` itself
   depends only on the standard library (`context` and `sync`).
 - **Test-only dependency:** [`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak).
 

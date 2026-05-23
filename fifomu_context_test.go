@@ -58,8 +58,8 @@ func TestLockContext_BlockedCancel(t *testing.T) {
 		errCh <- mu.LockContext(ctx)
 	}()
 
-	// Let the goroutine queue itself.
-	time.Sleep(20 * time.Millisecond)
+	// Deterministically wait for the goroutine to enqueue.
+	waitForWaiters(t, &mu, 1)
 
 	cancel()
 
@@ -90,7 +90,8 @@ func TestLockContext_ContextCause(t *testing.T) {
 		errCh <- mu.LockContext(ctx)
 	}()
 
-	time.Sleep(20 * time.Millisecond)
+	// Deterministically wait for the goroutine to enqueue.
+	waitForWaiters(t, &mu, 1)
 
 	cancel(want)
 
