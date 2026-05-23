@@ -114,3 +114,48 @@ jobs:
           fail-on-alert: false
           alert-comment-cc-users: '@neilotoole'
 
+  # PR-time comparison: benchmark the PR head and compare it against the
+  # master baseline stored on benchmark-data, without writing the PR's own
+  # numbers back to history. Skipped for forks and Dependabot, whose
+  # pull_request GITHUB_TOKEN is read-only and can neither read secrets nor
+  # post comments — running there would only error.
+  bench-pr:
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # fetch the baseline branch
+      pull-requests: write # post the comparison comment
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run benchmarks
+        run: go test -bench=. -benchmem -run=^$ ./... | tee benchmark-output.txt
+
+      # Compares against the latest benchmark-data entry. summary-always
+      # renders the full diff in the run summary every time; comment-on-alert
+      # posts a PR comment only on a >=200% regression. auto-push/save-data-file
+      # are off so PR numbers never enter the master trend, and fail-on-alert
+      # is off so the check never reddens.
+      - name: Compare against baseline
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: fifomu benchmarks
+          tool: go
+          output-file-path: benchmark-output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          gh-pages-branch: benchmark-data
+          auto-push: false
+          save-data-file: false
+          summary-always: true
+          alert-threshold: '200%'
+          comment-on-alert: true
+          fail-on-alert: false
+          alert-comment-cc-users: '@neilotoole'
+
