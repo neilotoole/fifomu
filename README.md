@@ -2,6 +2,7 @@
 [![Go Report Card](https://goreportcard.com/badge/neilotoole/fifomu)](https://goreportcard.com/report/neilotoole/fifomu)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/neilotoole/fifomu/blob/master/LICENSE)
 ![Pipeline](https://github.com/neilotoole/fifomu/actions/workflows/go.yml/badge.svg)
+[![codecov](https://codecov.io/gh/neilotoole/fifomu/branch/master/graph/badge.svg)](https://codecov.io/gh/neilotoole/fifomu)
 
 # fifomu: mutex with FIFO lock acquisition
 

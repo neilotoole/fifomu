@@ -1,0 +1,14 @@
+# Codecov configuration. See https://docs.codecov.com/docs/codecov-yaml
+coverage:
+  status:
+    project:
+      default:
+        target: auto      # Compare against the base commit.
+        threshold: 0.5%   # Tolerate tiny dips without failing the check.
+    patch:
+      default:
+        target: 90%       # New/changed lines should be well covered.
+
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: true   # Only comment on PRs that move coverage.
