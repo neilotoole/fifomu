@@ -2,6 +2,7 @@ package native
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -247,7 +248,60 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 // (cancelled) entries, and hands off to the first live waiter via
 // direct runtime_Semrelease.
 func (m *Mutex) unlockSlow() {
-	panic("phase3: unlockSlow not yet implemented")
+	// Reject double-unlock cleanly: if state has no locked bit,
+	// fail with the canonical message before walking the queue.
+	if m.state.Load()&mutexLocked == 0 {
+		panic("sync: unlock of unlocked mutex")
+	}
+
+	// Dequeue is single-threaded (only the lock holder unlocks,
+	// and only one holder exists at a time). No CAS contention on
+	// head; a plain Store after the read suffices.
+	for {
+		h := m.head.Load()
+		// Sentinel has been initialized (lockSlow always
+		// ensureSentinel's before adding waiters). If head is nil
+		// here, somebody Unlocked without any prior Lock — that's
+		// the double-unlock case which the panic above catches,
+		// so this should be unreachable. Defensive nil-guard:
+		if h == nil {
+			panic("native.Mutex: unlockSlow saw nil head; impossible if state has locked bit")
+		}
+		n := h.next.Load()
+		if n == nil {
+			// Queue appears empty. Either (a) truly empty (all
+			// waiters dequeued, decremented count to zero), or
+			// (b) an enqueue is mid-flight between tail.Swap and
+			// oldTail.next.Store.
+			if m.state.Load()&^mutexLocked != 0 {
+				// state.waiterCount > 0; enqueue in flight. Yield
+				// and retry. The enqueue completes in O(1) atomic
+				// ops once it starts, so this terminates quickly.
+				runtime.Gosched()
+				continue
+			}
+			// Truly empty. Clear the locked bit.
+			m.state.Store(0)
+			return
+		}
+
+		// Dequeue n by advancing head. Single-threaded so no CAS.
+		m.head.Store(n)
+		m.state.Add(^uint32(mutexWaiterUnit - 1)) // atomic subtract
+
+		if n.state.CompareAndSwap(waiterParked, waiterWon) {
+			// We claimed this waiter. Hand off via direct
+			// Semrelease with handoff=true.
+			runtime_Semrelease(&n.sema, true, 0)
+			return
+		}
+		// n was cancelled (waiterCancelled). The cancellation
+		// watcher already Semreleased it; the LockContext caller
+		// returned ctx.Err() without touching n. n is fresh-allocated
+		// (LockContext waiters are not pooled), so we drop it on
+		// the floor and let GC reclaim. Continue the loop to find
+		// the next live waiter.
+	}
 }
 
 // noCopy triggers `go vet -copylocks` on accidental copies of Mutex.
