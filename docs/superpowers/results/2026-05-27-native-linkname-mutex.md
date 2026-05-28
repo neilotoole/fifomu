@@ -72,6 +72,18 @@ This needs to be documented as a known constraint for any phase 2 plan: every co
 
 This is a real loss for production debugging — users running with `mutexprofile` would see sync.Mutex contention but miss native.Mutex contention. Needs prominent documentation in any public release.
 
+### Goroutine-profile attribution
+
+Blocked goroutines parked in `runtime_Semacquire` from this package will appear in `runtime/pprof` goroutine profiles with the wait reason `"semacquire"` (the default), not the more useful `"sync.Mutex.Lock"` tag that sync.Mutex's internal variant sets via `waitReasonSyncMutexLock`. Users debugging "why are goroutines blocked" may see unhelpful stack frames. Distinct from the mutex-profile concern above. (Surfaced by the final reviewer; missed in the first pass.)
+
+### `MutexWorkSlack` regression vs `MutexWork`
+
+Native is 156 ns on `MutexWorkSlack` but 131 ns on `MutexWork` — a 19% slowdown when the slack-mode parallelism multiplier and `runtime.Gosched()` are introduced. The stdlib delta between the two benchmarks is much smaller (117 vs 133 ns). Plausible root cause: `runtime_Semrelease(handoff=true)` calls `goyield()` internally (`runtime/sema.go:264-287`), and that interacts poorly with the explicit `Gosched()` in the workload — the releaser may lose its P twice in succession. Worth investigating in phase 2 before declaring the design final; the gap might close with a different `handoff` policy when the workload is slack-heavy. (Surfaced by the final reviewer.)
+
+### Linkname allowlist tracking
+
+The linker's blocked-linknames map (`cmd/link/internal/loader/loader.go:2406`) is curated per Go version. The current Go 1.26 toolchain leaves `sync.runtime_Semacquire`/`Semrelease` unrestricted (only `internal/sync.runtime_Semacquire` and `internal/sync.runtime_SemacquireMutex` are restricted to `internal/sync`). The Go team has stated intent to tighten this surface over time. **Phase 2 should include a tracking note in CI to recheck after every Go minor-version bump** so we catch any regression before users hit it. (Surfaced by the final reviewer.)
+
 ## What phase 2 needs to solve
 
 The prototype intentionally omitted `LockContext`. To ship as a full fifomu replacement, phase 2 must:
@@ -80,6 +92,15 @@ The prototype intentionally omitted `LockContext`. To ship as a full fifomu repl
 2. Provide cancellable parking. The runtime semaphore primitives are not cancellable, so cancellation has to be layered on top — likely via a ticketed waiter scheme (each waiter has a monotonic ticket; cancellation atomically marks the waiter tombstoned; `Unlock` skips tombstoned entries).
 3. Pursue the design without losing the uncontended-fast-path win. The state-word + sema design must remain reachable when no LockContext callers are present.
 4. Document the race-detector workaround and the mutex-profile loss in the package doc.
+
+### Hardest sub-problem (per the final reviewer)
+
+Cancellation requires an out-of-band waiter list (since the runtime sema's queue is opaque and cannot be selectively dequeued). That list must coordinate with the state word and the sema release without introducing a second protective lock — otherwise we lose the uncontended fast-path win. **The genuinely hard part is proving no ordering of a concurrent (cancel, unlock, new-arrival) trio produces a live-lock or a missed wakeup.** Two options to evaluate:
+
+- **(a) Tombstoned tickets:** each waiter gets a monotonic ticket; cancellation marks the waiter tombstoned via an atomic CAS on the waiter struct; `Unlock` walks tombstoned entries before releasing the sema. The walk has to be lock-free or use an inner mutex (which defeats the perf win on the slow path).
+- **(b) Wake-and-bail:** on cancellation, the watcher `Semreleases` to wake the waiter spuriously; the waiter checks its own ctx on wake-up and immediately re-releases the lock to the next waiter if cancelled. Conceptually simpler but leaks a wakeup token, and pathological under high cancellation rates.
+
+Either way, prototype the cancellation path against a reproducer for the (cancel, unlock, new-arrival) race before writing the rest of phase 2.
 
 ## Full benchstat output
 
