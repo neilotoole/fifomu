@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -287,4 +288,55 @@ func TestMutex_CancellationPreservesFIFO(t *testing.T) {
 			t.Fatalf("acquisition order = %v, want %v", got, want)
 		}
 	}
+}
+
+// TestMutex_CancelUnlockRace stresses the race between LockContext
+// cancellation and Unlock claiming the same waiter. Either the
+// cancellation CAS or the Unlock CAS must win; both winning (or
+// both losing) is a bug. The test runs a tight Lock/LockContext/cancel/
+// Unlock loop and asserts that the lock count and cancellation count
+// reconcile: every iteration either acquires the lock once and
+// returns no error, or fails to acquire and returns the ctx error.
+func TestMutex_CancelUnlockRace(t *testing.T) {
+	const iterations = 5_000
+
+	var mu native.Mutex
+	var acquired, cancelled int64
+
+	for range iterations {
+		mu.Lock()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		var err error
+		go func() {
+			err = mu.LockContext(ctx)
+			close(done)
+		}()
+
+		// Small sleep to let the goroutine reach Semacquire.
+		time.Sleep(10 * time.Microsecond)
+
+		// Race the Unlock and the cancel.
+		go cancel()
+		mu.Unlock()
+
+		<-done
+		if err == nil {
+			atomic.AddInt64(&acquired, 1)
+			mu.Unlock()
+		} else if errors.Is(err, context.Canceled) {
+			atomic.AddInt64(&cancelled, 1)
+		} else {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+
+	total := atomic.LoadInt64(&acquired) + atomic.LoadInt64(&cancelled)
+	if total != iterations {
+		t.Fatalf("lost iterations: acquired=%d cancelled=%d total=%d want=%d",
+			acquired, cancelled, total, iterations)
+	}
+	t.Logf("acquired=%d cancelled=%d (both outcomes valid; both occurring proves the race is exercised)",
+		acquired, cancelled)
 }

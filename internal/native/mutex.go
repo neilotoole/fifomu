@@ -130,7 +130,19 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 		// Locked bit is set. Proceed to enqueue.
 
 		// Enqueue: bump waiter count and append to tail.
-		w := waiterPool.Get().(*waiter)
+		//
+		// Pool only Lock waiters. LockContext waiters are allocated
+		// fresh — their sema's lifetime is tied to that allocation,
+		// which prevents a stray watcher Semrelease (firing after the
+		// CAS race has resolved against it) from leaking into a future
+		// iteration's reuse of the same sema address.
+		var w *waiter
+		fromPool := ctx.Done() == nil
+		if fromPool {
+			w = waiterPool.Get().(*waiter)
+		} else {
+			w = &waiter{}
+		}
 		w.state.Store(waiterParked)
 		newState := m.state.Add(mutexWaiterUnit)
 		if newState&mutexLocked == 0 {
@@ -138,8 +150,10 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 			// check above and our state.Add. Undo the increment and retry
 			// the fast-acquire loop.
 			m.state.Add(^uint32(mutexWaiterUnit - 1))
-			w.resetForPool()
-			waiterPool.Put(w)
+			if fromPool {
+				w.resetForPool()
+				waiterPool.Put(w)
+			}
 			continue
 		}
 		// Locked bit is still set after our Add. Enqueue the waiter.
@@ -157,44 +171,56 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 			runtime_Semacquire(&w.sema)
 			// Race-detector synchronization edge.
 			_ = w.state.Load()
+			// fromPool is always true on this branch; recycle.
 			w.resetForPool()
 			waiterPool.Put(w)
 			return nil
 		}
 
 		// LockContext: watch for cancellation while parked.
+		//
+		// `cancelled` is written by the watcher (only on a successful
+		// CAS to waiterCancelled) and read by this goroutine after
+		// Semacquire returns. It is intentionally a separate variable
+		// from w.state because in the cancelled path, w stays in the
+		// FIFO list and is exclusively owned by Unlock from the moment
+		// the watcher CAS succeeds — Unlock may recycle w at any time
+		// after that, so we must not read or write w here.
+		var cancelled atomic.Bool
 		done := make(chan struct{})
 		go func() {
 			select {
 			case <-ctx.Done():
 				if w.state.CompareAndSwap(waiterParked, waiterCancelled) {
-					// We tombstoned the entry before Unlock could
-					// pick it. Wake the waiter so it exits Semacquire
-					// and returns the ctx error.
+					// Tombstone established before Unlock could claim
+					// us. Signal G via the heap variable (NOT w),
+					// then wake G.
+					cancelled.Store(true)
 					runtime_Semrelease(&w.sema, false, 0)
 				}
-				// If the CAS failed, Unlock already CAS'd to won and
-				// is about to Semrelease us — no action needed here;
-				// we just let the watcher exit.
+				// If the CAS failed, Unlock won the race and will
+				// Semrelease us; do nothing here.
 			case <-done:
 			}
 		}()
 		runtime_Semacquire(&w.sema)
 		close(done)
-		// Race-detector synchronization edge.
-		state := w.state.Load()
-		if state == waiterCancelled {
-			// The waiter is still in the list — Unlock will pop
-			// it and recycle it for us. We MUST NOT touch w
-			// further: another goroutine could pull our slot
-			// from the pool the moment we Put it, and then
-			// modify w.next while Unlock walks the list past us.
+		if cancelled.Load() {
+			// Watcher-wins path: w is still in the list and is owned
+			// by Unlock (it will pop and recycle w when it finds the
+			// tombstone). DO NOT touch w from here.
 			return context.Cause(ctx)
 		}
-		// We won — the unlocker handed us the lock and popped us
-		// from the list. The waiter is exclusively ours now.
-		w.resetForPool()
-		waiterPool.Put(w)
+		// Unlock-wins path: the unlocker popped w from the list and
+		// CAS'd state to waiterWon; we now exclusively own w.
+		//
+		// LockContext waiters are not pooled (see allocation above),
+		// so just let GC reclaim w. We still need a race-detector-
+		// visible HB edge with the unlocker's read of w.next at the
+		// list-pop, because the linkname'd sema's HB is invisible to
+		// -race. Briefly taking listMu provides that edge.
+		m.listMu.Lock()
+		m.listMu.Unlock() //nolint:staticcheck // sync edge for -race
 		return nil
 	}
 }
@@ -262,12 +288,10 @@ func (m *Mutex) unlockSlow() {
 			runtime_Semrelease(&w.sema, true, 0)
 			return
 		}
-		// w was cancelled (state == waiterCancelled). The
-		// cancellation watcher already Semreleased it, and the
-		// LockContext goroutine returned without touching w (so
-		// nobody else has a reference to it). Recycle it here.
-		w.resetForPool()
-		waiterPool.Put(w)
+		// w was cancelled. LockContext waiters are not pooled, so
+		// we simply drop w on the floor here — GC will reclaim it.
+		// The watcher's Semrelease has already woken the LockContext
+		// goroutine, which returned without touching w.
 		// Loop to find the next live entry.
 	}
 }
