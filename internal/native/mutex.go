@@ -78,6 +78,25 @@ func (m *Mutex) Lock() {
 	_ = m.lockSlow(context.Background())
 }
 
+// LockContext acquires m, blocking until available or ctx is done.
+// On cancellation, returns context.Cause(ctx) and leaves m unchanged.
+//
+// If ctx is already cancelled when LockContext is called and the
+// lock is available with no queued waiters, LockContext may still
+// succeed without blocking.
+//
+// If the mutex becomes available concurrently with ctx cancellation,
+// LockContext may acquire the mutex and return nil even though ctx
+// is done. Callers requiring ctx-strict behavior should re-check
+// ctx.Err() after acquiring.
+func (m *Mutex) LockContext(ctx context.Context) error {
+	// Fast path: same as Lock — only attempt if no waiters and unlocked.
+	if m.state.CompareAndSwap(0, mutexLocked) {
+		return nil
+	}
+	return m.lockSlow(ctx)
+}
+
 // lockSlow is the Lock slow path. Both Lock and LockContext call it;
 // Lock passes context.Background() (whose Done() is nil, signalling
 // the non-cancellable path), LockContext passes the caller's ctx.
