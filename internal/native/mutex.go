@@ -3,7 +3,6 @@ package native
 import (
 	"context"
 	"runtime"
-	"sync"
 	"sync/atomic"
 )
 
@@ -68,18 +67,17 @@ type waiter struct {
 	next atomic.Pointer[waiter]
 }
 
-// waiterPool recycles Lock-path waiters. LockContext-path waiters
-// bypass the pool (see lockSlow).
-var waiterPool = sync.Pool{
-	New: func() any { return new(waiter) },
-}
-
-// resetForPool returns w to a state safe for pool reuse.
-func (w *waiter) resetForPool() {
-	w.state.Store(waiterParked)
-	w.next.Store(nil)
-	w.sema = 0
-}
+// Waiters are NOT pooled. The MS-queue's "popped head becomes new
+// sentinel" invariant requires the popped node's .next pointer to
+// remain valid until the next Unlock advances past it. Resetting
+// fields for pool reuse would break the chain. The cost is one
+// allocation per slow-path call; benchmarks should show that's
+// still a net win vs current fifomu's channel+inner-mutex design
+// on ns/op, but it does regress B/op from 0 to ~24.
+//
+// (A pool-friendly design — Unlock recycling the OLD sentinel when
+// it advances head — is feasible for Lock waiters but conflicts
+// with LockContext watcher lifetimes. Deferred to a future revision.)
 
 // Lock acquires m, blocking until it is available.
 func (m *Mutex) Lock() {
@@ -163,28 +161,16 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 			return nil
 		}
 
-		// Allocate waiter: Lock callers use the pool; LockContext
-		// callers use fresh allocations (see spec for rationale on
-		// the stale-Semrelease class of bug).
-		var w *waiter
-		fromPool := ctx.Done() == nil
-		if fromPool {
-			w = waiterPool.Get().(*waiter)
-		} else {
-			w = new(waiter)
-		}
+		// Allocate fresh waiter per slow-path call (see top-of-file
+		// comment for why we cannot pool with the MS-queue layout).
+		w := new(waiter)
 		w.state.Store(waiterParked)
-		w.next.Store(nil)
 
 		// Bump waiter count BEFORE enqueueing. If the lock was
 		// freed between our last check and this Add, undo and retry.
 		newState := m.state.Add(mutexWaiterUnit)
 		if newState&mutexLocked == 0 {
 			m.state.Add(^uint32(mutexWaiterUnit - 1))
-			if fromPool {
-				w.resetForPool()
-				waiterPool.Put(w)
-			}
 			continue
 		}
 
@@ -200,8 +186,6 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 			// CAS on w.state (sema is linkname'd and lacks
 			// race.Acquire/Release annotations).
 			_ = w.state.Load()
-			w.resetForPool()
-			waiterPool.Put(w)
 			return nil
 		}
 
@@ -227,19 +211,14 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 
 		if cancelled.Load() {
 			// Watcher won the race. The waiter stays in the queue
-			// (Unlock will dequeue it and observe the tombstone via
-			// its own CAS failure). Do NOT touch w here — its
-			// memory is owned by Unlock from now on. Since we
-			// allocated fresh (no pool), there's nothing to return.
+			// (Unlock will walk past it on the next dequeue, finding
+			// the tombstone via its CAS failure). Do NOT touch w —
+			// it's owned by the queue from now on; GC will reclaim
+			// once Unlock advances head past it.
 			return context.Cause(ctx)
 		}
-		// Unlock won. We exclusively own w; recycle if it's pooled.
-		// (For LockContext-fresh waiters, the resetForPool is a
-		// no-op but harmless; we don't put fresh waiters back.)
-		if fromPool {
-			w.resetForPool()
-			waiterPool.Put(w)
-		}
+		// Unlock won. The race-detector synchronization edge:
+		_ = w.state.Load()
 		return nil
 	}
 }
