@@ -231,3 +231,60 @@ func TestMutex_MixedFIFO(t *testing.T) {
 		}
 	}
 }
+
+// TestMutex_CancellationPreservesFIFO verifies that a cancelled
+// LockContext entry in the middle of the queue is tombstoned and
+// skipped by Unlock — the remaining waiters wake in arrival order
+// as if the cancelled entry had never been there.
+func TestMutex_CancellationPreservesFIFO(t *testing.T) {
+	const N = 6
+	var mu native.Mutex
+	mu.Lock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	order := make(chan int, N)
+	var wg sync.WaitGroup
+
+	// Waiters 0..N-1. Waiter 2 uses LockContext with cancellable
+	// ctx; we'll cancel it after everyone has enqueued.
+	for i := range N {
+		wg.Go(func() {
+			if i == 2 {
+				if err := mu.LockContext(ctx); err != nil {
+					return
+				}
+			} else {
+				mu.Lock()
+			}
+			order <- i
+			mu.Unlock()
+		})
+		time.Sleep(300 * time.Microsecond)
+	}
+
+	// All N goroutines are enqueued. Cancel waiter 2.
+	cancel()
+	time.Sleep(20 * time.Millisecond) // let the watcher tombstone
+
+	// Now release the lock — Unlock chain should yield 0, 1, 3, 4, 5.
+	mu.Unlock()
+	wg.Wait()
+	close(order)
+
+	var got []int
+	for v := range order {
+		got = append(got, v)
+	}
+
+	want := []int{0, 1, 3, 4, 5}
+	if len(got) != len(want) {
+		t.Fatalf("got %d acquisitions, want %d (got=%v)", len(got), len(want), got)
+	}
+	for i, v := range got {
+		if v != want[i] {
+			t.Fatalf("acquisition order = %v, want %v", got, want)
+		}
+	}
+}

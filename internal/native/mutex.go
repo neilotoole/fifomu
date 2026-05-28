@@ -183,11 +183,18 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 		close(done)
 		// Race-detector synchronization edge.
 		state := w.state.Load()
-		w.resetForPool()
-		waiterPool.Put(w)
 		if state == waiterCancelled {
+			// The waiter is still in the list — Unlock will pop
+			// it and recycle it for us. We MUST NOT touch w
+			// further: another goroutine could pull our slot
+			// from the pool the moment we Put it, and then
+			// modify w.next while Unlock walks the list past us.
 			return context.Cause(ctx)
 		}
+		// We won — the unlocker handed us the lock and popped us
+		// from the list. The waiter is exclusively ours now.
+		w.resetForPool()
+		waiterPool.Put(w)
 		return nil
 	}
 }
@@ -256,9 +263,12 @@ func (m *Mutex) unlockSlow() {
 			return
 		}
 		// w was cancelled (state == waiterCancelled). The
-		// cancellation watcher Semreleased it already; it will
-		// recycle the waiter itself. Loop to find the next live
-		// entry.
+		// cancellation watcher already Semreleased it, and the
+		// LockContext goroutine returned without touching w (so
+		// nobody else has a reference to it). Recycle it here.
+		w.resetForPool()
+		waiterPool.Put(w)
+		// Loop to find the next live entry.
 	}
 }
 
