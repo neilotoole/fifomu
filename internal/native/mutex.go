@@ -75,12 +75,14 @@ func (m *Mutex) Lock() {
 	if m.state.CompareAndSwap(0, mutexLocked) {
 		return
 	}
-	_ = m.lockSlow(nil)
+	_ = m.lockSlow(context.Background())
 }
 
-// lockSlow is the Lock slow path. The non-cancellable variant calls
-// it directly with ctx=nil; LockContext calls it via a wrapper.
-// Returns ctx.Err()-style error only when ctx is non-nil and cancelled.
+// lockSlow is the Lock slow path. Both Lock and LockContext call it;
+// Lock passes context.Background() (whose Done() is nil, signalling
+// the non-cancellable path), LockContext passes the caller's ctx.
+// Returns context.Cause(ctx) only when ctx becomes cancelled before
+// the lock is handed off.
 func (m *Mutex) lockSlow(ctx context.Context) error {
 	// Acquire listMu first, then re-attempt the fast acquire.
 	// This serializes the "claim a free lock" race with Unlock's
@@ -104,8 +106,9 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 	m.tail = w
 	m.listMu.Unlock()
 
-	if ctx == nil {
-		// Non-cancellable: just park.
+	if ctx.Done() == nil {
+		// Non-cancellable (context.Background / context.TODO):
+		// skip the watcher goroutine and just park.
 		runtime_Semacquire(&w.sema)
 		// Race-detector synchronization edge.
 		_ = w.state.Load()
