@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/neilotoole/fifomu"
+	"github.com/neilotoole/fifomu/internal/native"
 )
 
 // Acknowledgement: Much of the test code in this file is
@@ -31,6 +32,7 @@ var (
 	_ mutexer = (*fifomu.Mutex)(nil)
 	_ mutexer = (*sync.Mutex)(nil)
 	_ mutexer = (*semaphoreMutex)(nil)
+	_ mutexer = (*native.Mutex)(nil)
 )
 
 // newMu is a function that returns a new mutexer.
@@ -48,6 +50,10 @@ func newStdlibMu() mutexer {
 
 func newSemaphoreMu() mutexer {
 	return &semaphoreMutex{sema: semaphore.NewWeighted(1)}
+}
+
+func newNativeMu() mutexer {
+	return &native.Mutex{}
 }
 
 func benchmarkEachImpl(b *testing.B, fn func(b *testing.B)) {
@@ -69,6 +75,11 @@ func benchmarkEachImpl(b *testing.B, fn func(b *testing.B)) {
 	b.Run("semaphoreMu", func(b *testing.B) {
 		b.ReportAllocs()
 		newMu = newSemaphoreMu
+		fn(b)
+	})
+	b.Run("native", func(b *testing.B) {
+		b.ReportAllocs()
+		newMu = newNativeMu
 		fn(b)
 	})
 }
