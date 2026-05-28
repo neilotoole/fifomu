@@ -90,13 +90,11 @@ func TestMutex_FIFO_Smoke(t *testing.T) {
 	order := make(chan int, N)
 	var wg sync.WaitGroup
 	for i := range N {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			mu.Lock()
 			order <- i
 			mu.Unlock()
-		}()
+		})
 		// Stagger to ensure goroutines reach the parking point in
 		// arrival order. Without this, the test sometimes fires
 		// even for a correct FIFO impl.
