@@ -103,32 +103,41 @@ func (m *Mutex) LockContext(ctx context.Context) error {
 // Returns context.Cause(ctx) only when ctx becomes cancelled before
 // the lock is handed off.
 func (m *Mutex) lockSlow(ctx context.Context) error {
-	// Acquire listMu first, then re-attempt the fast acquire.
-	// This serializes the "claim a free lock" race with Unlock's
-	// list-walking, so we never enqueue when the lock is actually
-	// free with no live waiters.
-	m.listMu.Lock()
-
-	// Fast-acquire loop: try to claim the lock (handles both state=0
-	// and state with phantom waiter bits from a concurrent Unlock race).
-	// The race: fast-path Unlock CAS(locked, 0) can clear the locked bit
-	// between our initial CAS check and our state.Add below. We detect
-	// this by checking the locked bit after state.Add, and retry here if
-	// it was cleared.
+	// Try fast-acquire first WITHOUT listMu. Under high parallelism
+	// (slack workloads) this matters: listMu becomes a serialization
+	// point when every contended caller takes it just to fail and
+	// fall through to enqueue. We only need listMu when we actually
+	// touch the waiter list.
 	for {
 		s := m.state.Load()
 		if s&mutexLocked == 0 {
-			// Lock bit is clear (state=0, or state has only phantom waiter
-			// bits from a previous race). Try to acquire by setting the bit.
+			// Lock bit is clear (state=0 or has only phantom waiter
+			// bits). Try to acquire by setting the bit.
+			if m.state.CompareAndSwap(s, s|mutexLocked) {
+				return nil
+			}
+			// CAS failed, retry.
+			continue
+		}
+		// Lock is held; we must enqueue. Drop into the listMu-protected
+		// enqueue path.
+		break
+	}
+
+	// Enqueue path: take listMu. Under it, re-check state once more —
+	// the lock may have been released since our last load, in which case
+	// we can fast-acquire directly (still under listMu to serialize with
+	// any concurrent unlockSlow).
+	m.listMu.Lock()
+	for {
+		s := m.state.Load()
+		if s&mutexLocked == 0 {
 			if m.state.CompareAndSwap(s, s|mutexLocked) {
 				m.listMu.Unlock()
 				return nil
 			}
-			// CAS failed — state changed concurrently. Retry.
 			continue
 		}
-		// Locked bit is set. Proceed to enqueue.
-
 		// Enqueue: bump waiter count and append to tail.
 		//
 		// Pool only Lock waiters. LockContext waiters are allocated
@@ -147,8 +156,8 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 		newState := m.state.Add(mutexWaiterUnit)
 		if newState&mutexLocked == 0 {
 			// Race: fast-path Unlock cleared the locked bit between our
-			// check above and our state.Add. Undo the increment and retry
-			// the fast-acquire loop.
+			// state.Load above and our state.Add. Undo and retry under
+			// listMu.
 			m.state.Add(^uint32(mutexWaiterUnit - 1))
 			if fromPool {
 				w.resetForPool()
@@ -156,7 +165,7 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 			}
 			continue
 		}
-		// Locked bit is still set after our Add. Enqueue the waiter.
+		// Enqueue.
 		if m.tail == nil {
 			m.head = w
 		} else {
