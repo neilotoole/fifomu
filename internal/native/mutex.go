@@ -1,6 +1,9 @@
 package native
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // Mutex is a FIFO mutex that parks waiters directly on the runtime
 // semaphore primitive. See linkname.go for the runtime hooks.
@@ -23,6 +26,46 @@ const (
 	mutexLocked     = 1
 	mutexWaiterUnit = 2 // increment per parked waiter
 )
+
+// waiterState values, stored in waiter.state.
+const (
+	waiterParked    uint32 = 0
+	waiterWon       uint32 = 1
+	waiterCancelled uint32 = 2
+)
+
+// waiter is one entry in a Mutex's FIFO queue. Lock and LockContext
+// callers both go through this queue; the state field lets Unlock
+// skip cancelled entries (the tombstone) without breaking FIFO.
+type waiter struct {
+	// state transitions: parked -> won (by Unlock's CAS) or
+	// parked -> cancelled (by LockContext's watcher CAS).
+	// Whichever side CASes first wins the race.
+	state atomic.Uint32
+
+	// sema is the per-waiter address used for runtime_Semacquire.
+	// Per-waiter (not shared) so that cancellation can wake
+	// exactly this goroutine via runtime_Semrelease(&w.sema, ...).
+	sema uint32
+
+	// next is the singly-linked list pointer; protected by Mutex.listMu.
+	next *waiter
+}
+
+// waiterPool recycles waiters to keep the slow path allocation-free
+// in steady state. Every code path that returns a waiter to the pool
+// MUST first reset its fields — see the resetForPool method.
+var waiterPool = sync.Pool{
+	New: func() any { return new(waiter) },
+}
+
+// resetForPool returns w to a state safe for the pool: state=parked,
+// next=nil, sema=0. Called immediately before waiterPool.Put.
+func (w *waiter) resetForPool() {
+	w.state.Store(waiterParked)
+	w.next = nil
+	w.sema = 0
+}
 
 // Lock acquires m, blocking until it is available.
 func (m *Mutex) Lock() {
