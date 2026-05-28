@@ -1,6 +1,8 @@
 package native_test
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -123,4 +125,53 @@ func want(n int) []int {
 		out[i] = i
 	}
 	return out
+}
+
+func TestLockContext_FastPath(t *testing.T) {
+	var mu native.Mutex
+	if err := mu.LockContext(context.Background()); err != nil {
+		t.Fatalf("LockContext on uncontended mutex returned %v", err)
+	}
+	mu.Unlock()
+}
+
+func TestLockContext_AlreadyCancelled(t *testing.T) {
+	var mu native.Mutex
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	// With no waiters and an unlocked mutex, LockContext may
+	// succeed via the fast path even though ctx is already done —
+	// this matches the documented behavior.
+	if err := mu.LockContext(ctx); err != nil {
+		t.Fatalf("LockContext on uncontended mutex with cancelled ctx returned %v (expected nil per docs)", err)
+	}
+	mu.Unlock()
+}
+
+func TestLockContext_CancelWhileBlocked(t *testing.T) {
+	var mu native.Mutex
+	mu.Lock() // hold the lock so LockContext must block
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- mu.LockContext(ctx)
+	}()
+
+	// Give the LockContext goroutine time to enqueue.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("LockContext returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("LockContext did not return within 2s after ctx cancel")
+	}
+
+	mu.Unlock() // we still hold the lock; nobody got it
 }
