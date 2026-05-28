@@ -1,6 +1,7 @@
 package native
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 )
@@ -74,13 +75,72 @@ func (m *Mutex) Lock() {
 	if m.state.CompareAndSwap(0, mutexLocked) {
 		return
 	}
-	m.lockSlow()
+	_ = m.lockSlow(nil)
 }
 
-// lockSlow is the parking path. Kept out of Lock so Lock's fast
-// path is small enough to inline.
-func (m *Mutex) lockSlow() {
-	panic("phase2: lockSlow not yet implemented")
+// lockSlow is the Lock slow path. The non-cancellable variant calls
+// it directly with ctx=nil; LockContext calls it via a wrapper.
+// Returns ctx.Err()-style error only when ctx is non-nil and cancelled.
+func (m *Mutex) lockSlow(ctx context.Context) error {
+	// Acquire listMu first, then re-attempt the fast acquire.
+	// This serializes the "claim a free lock" race with Unlock's
+	// list-walking, so we never enqueue when the lock is actually
+	// free with no live waiters.
+	m.listMu.Lock()
+	if m.state.CompareAndSwap(0, mutexLocked) {
+		m.listMu.Unlock()
+		return nil
+	}
+
+	// Enqueue: bump waiter count and append to tail.
+	w := waiterPool.Get().(*waiter)
+	w.state.Store(waiterParked)
+	m.state.Add(mutexWaiterUnit)
+	if m.tail == nil {
+		m.head = w
+	} else {
+		m.tail.next = w
+	}
+	m.tail = w
+	m.listMu.Unlock()
+
+	if ctx == nil {
+		// Non-cancellable: just park.
+		runtime_Semacquire(&w.sema)
+		// Race-detector synchronization edge.
+		_ = w.state.Load()
+		w.resetForPool()
+		waiterPool.Put(w)
+		return nil
+	}
+
+	// LockContext: watch for cancellation while parked.
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			if w.state.CompareAndSwap(waiterParked, waiterCancelled) {
+				// We tombstoned the entry before Unlock could
+				// pick it. Wake the waiter so it exits Semacquire
+				// and returns the ctx error.
+				runtime_Semrelease(&w.sema, false, 0)
+			}
+			// If the CAS failed, Unlock already CAS'd to won and
+			// is about to Semrelease us — no action needed here;
+			// we just let the watcher exit.
+		case <-done:
+		}
+	}()
+	runtime_Semacquire(&w.sema)
+	close(done)
+	// Race-detector synchronization edge.
+	state := w.state.Load()
+	w.resetForPool()
+	waiterPool.Put(w)
+	if state == waiterCancelled {
+		return context.Cause(ctx)
+	}
+	return nil
 }
 
 // Unlock releases m. Panics if m is not locked on entry.
