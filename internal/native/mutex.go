@@ -129,7 +129,21 @@ func (m *Mutex) Unlock() {
 // sentinel waiter. Idempotent and safe under concurrent calls — the
 // first caller CASes head; later callers wait for tail to be set.
 func (m *Mutex) ensureSentinel() {
-	panic("phase3: ensureSentinel not yet implemented")
+	if m.head.Load() != nil {
+		return
+	}
+	sentinel := new(waiter)
+	if m.head.CompareAndSwap(nil, sentinel) {
+		// We won the head CAS; we own setting tail too.
+		m.tail.Store(sentinel)
+		return
+	}
+	// Another goroutine won the CAS. They will set tail; spin
+	// briefly waiting for them. The window is O(1) atomic ops on
+	// the winner's side, so this loop terminates quickly.
+	for m.tail.Load() == nil {
+		// brief contention; let the scheduler run another goroutine
+	}
 }
 
 // lockSlow is the slow path for both Lock (ctx=context.Background())
