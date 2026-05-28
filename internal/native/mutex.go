@@ -3,6 +3,7 @@ package native
 import (
 	"context"
 	"runtime"
+	"sync"
 	"sync/atomic"
 )
 
@@ -55,9 +56,6 @@ type waiter struct {
 	state atomic.Uint32
 
 	// sema is the per-waiter address used for runtime_Semacquire.
-	// LockContext waiters are NOT pooled; the sema's lifetime
-	// matches the waiter allocation, so late-firing watchers can
-	// never land Semreleases on a recycled slot.
 	sema uint32
 
 	// next is the singly-linked list pointer. Lock-free reads via
@@ -65,19 +63,33 @@ type waiter struct {
 	// tail.Swap then oldTail.next.Store; dequeue (single-threaded
 	// in Unlock) uses head.Store with a plain Store.
 	next atomic.Pointer[waiter]
+
+	// pooled is true for waiters drawn from waiterPool (Lock
+	// callers and the sentinel). Unlock recycles these back to
+	// the pool when it advances head past them; LockContext
+	// waiters have pooled=false and are dropped on advance (GC
+	// reclaims after the cancellation watcher's closure exits).
+	pooled bool
 }
 
-// Waiters are NOT pooled. The MS-queue's "popped head becomes new
-// sentinel" invariant requires the popped node's .next pointer to
-// remain valid until the next Unlock advances past it. Resetting
-// fields for pool reuse would break the chain. The cost is one
-// allocation per slow-path call; benchmarks should show that's
-// still a net win vs current fifomu's channel+inner-mutex design
-// on ns/op, but it does regress B/op from 0 to ~24.
+// waiterPool recycles Lock-path waiters and sentinels.
 //
-// (A pool-friendly design — Unlock recycling the OLD sentinel when
-// it advances head — is feasible for Lock waiters but conflicts
-// with LockContext watcher lifetimes. Deferred to a future revision.)
+// IMPORTANT: G (the Lock caller) never recycles its own waiter,
+// because the popped waiter becomes the new MS-queue sentinel and
+// its .next is still needed by the next Unlock. Only Unlock recycles,
+// and only when it advances head past a waiter (at which point the
+// waiter is unreachable from the queue).
+var waiterPool = sync.Pool{
+	New: func() any { return &waiter{pooled: true} },
+}
+
+// resetForPool returns w to a state safe for pool reuse. Called by
+// Unlock when advancing head past w, not by G after waking.
+func (w *waiter) resetForPool() {
+	w.state.Store(waiterParked)
+	w.next.Store(nil)
+	w.sema = 0
+}
 
 // Lock acquires m, blocking until it is available.
 func (m *Mutex) Lock() {
@@ -131,7 +143,10 @@ func (m *Mutex) ensureSentinel() {
 	if m.head.Load() != nil {
 		return
 	}
-	sentinel := new(waiter)
+	// Sentinel is marked pooled so the first Unlock recycles it
+	// when it advances head past. (The sentinel is never a real
+	// waiter; recycling just lets the pool reuse the allocation.)
+	sentinel := &waiter{pooled: true}
 	if m.head.CompareAndSwap(nil, sentinel) {
 		// We won the head CAS; we own setting tail too.
 		m.tail.Store(sentinel)
@@ -161,16 +176,29 @@ func (m *Mutex) lockSlow(ctx context.Context) error {
 			return nil
 		}
 
-		// Allocate fresh waiter per slow-path call (see top-of-file
-		// comment for why we cannot pool with the MS-queue layout).
-		w := new(waiter)
-		w.state.Store(waiterParked)
+		// Allocate waiter. Lock callers (non-cancellable) draw from
+		// the pool; LockContext callers allocate fresh so the
+		// watcher's stale CAS/Semrelease can never land on a
+		// recycled slot owned by a future iteration's user.
+		var w *waiter
+		if ctx.Done() == nil {
+			w = waiterPool.Get().(*waiter)
+			w.state.Store(waiterParked)
+			w.next.Store(nil)
+			w.sema = 0
+			// w.pooled is true (set on pool New; never reset)
+		} else {
+			w = &waiter{} // pooled=false
+		}
 
 		// Bump waiter count BEFORE enqueueing. If the lock was
 		// freed between our last check and this Add, undo and retry.
 		newState := m.state.Add(mutexWaiterUnit)
 		if newState&mutexLocked == 0 {
 			m.state.Add(^uint32(mutexWaiterUnit - 1))
+			if w.pooled {
+				waiterPool.Put(w)
+			}
 			continue
 		}
 
@@ -268,6 +296,14 @@ func (m *Mutex) unlockSlow() {
 		m.head.Store(n)
 		m.state.Add(^uint32(mutexWaiterUnit - 1)) // atomic subtract
 
+		// h is no longer reachable from the queue (head has
+		// advanced past it). Recycle pooled waiters; let GC handle
+		// fresh ones (LockContext waiters held by watcher closures).
+		if h.pooled {
+			h.resetForPool()
+			waiterPool.Put(h)
+		}
+
 		if n.state.CompareAndSwap(waiterParked, waiterWon) {
 			// We claimed this waiter. Hand off via direct
 			// Semrelease with handoff=true.
@@ -276,10 +312,9 @@ func (m *Mutex) unlockSlow() {
 		}
 		// n was cancelled (waiterCancelled). The cancellation
 		// watcher already Semreleased it; the LockContext caller
-		// returned ctx.Err() without touching n. n is fresh-allocated
-		// (LockContext waiters are not pooled), so we drop it on
-		// the floor and let GC reclaim. Continue the loop to find
-		// the next live waiter.
+		// returned ctx.Err() without touching n. Loop to advance
+		// head past it (next iteration). n stays in the queue as
+		// the new sentinel until the next dequeue.
 	}
 }
 
