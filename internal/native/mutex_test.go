@@ -175,3 +175,59 @@ func TestLockContext_CancelWhileBlocked(t *testing.T) {
 
 	mu.Unlock() // we still hold the lock; nobody got it
 }
+
+// TestMutex_MixedFIFO verifies that the waiter queue treats Lock and
+// LockContext entries identically: entries wake in FIFO order
+// regardless of which entry point queued them.
+//
+// This invariant exists because users mix the two methods in real
+// code; a refactor that branched on the entry point (e.g., parking
+// LockContext on a separate sema) would silently break it.
+func TestMutex_MixedFIFO(t *testing.T) {
+	const N = 8
+	var mu native.Mutex
+	mu.Lock()
+
+	order := make(chan int, N)
+	errCh := make(chan error, N)
+	var wg sync.WaitGroup
+	ctx := context.Background()
+
+	for i := range N {
+		wg.Go(func() {
+			// Even i uses Lock, odd i uses LockContext.
+			if i%2 == 0 {
+				mu.Lock()
+			} else if err := mu.LockContext(ctx); err != nil {
+				errCh <- err
+				return
+			}
+			order <- i
+			mu.Unlock()
+		})
+		// Stagger so each goroutine reaches the enqueue point in
+		// arrival order. The reordering window in lockSlow before
+		// the goroutine takes listMu is bounded but real.
+		time.Sleep(300 * time.Microsecond)
+	}
+
+	mu.Unlock()
+	wg.Wait()
+	close(order)
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatal(err)
+	}
+
+	var got []int
+	for v := range order {
+		got = append(got, v)
+	}
+
+	for i, v := range got {
+		if v != i {
+			t.Fatalf("acquisition order = %v, want sequential (mismatch at position %d)", got, i)
+		}
+	}
+}
