@@ -13,13 +13,14 @@ import (
 type Mutex struct {
 	_ noCopy
 
-	// state: bit 0 = locked, bits 1..31 = parked waiter count.
+	// state: bit 0 = locked, bits 1..31 = waiter count.
 	state atomic.Uint32
 
-	// sema is the address parked waiters block on via
-	// runtime_Semacquire. Its value is opaque to us; only the
-	// runtime sema implementation touches it.
-	sema uint32
+	// listMu protects head and tail. Touched only on the slow
+	// path; uncontended fast paths bypass it entirely.
+	listMu sync.Mutex
+	head   *waiter
+	tail   *waiter
 }
 
 const (
@@ -79,36 +80,7 @@ func (m *Mutex) Lock() {
 // lockSlow is the parking path. Kept out of Lock so Lock's fast
 // path is small enough to inline.
 func (m *Mutex) lockSlow() {
-	// Add ourselves as a waiter, then park.
-	for {
-		old := m.state.Load()
-		if old == 0 {
-			// Lock was just released and there are no other
-			// waiters ahead of us. We can take it directly.
-			if m.state.CompareAndSwap(0, mutexLocked) {
-				return
-			}
-			continue
-		}
-		if m.state.CompareAndSwap(old, old+mutexWaiterUnit) {
-			runtime_Semacquire(&m.sema)
-			// On wake, the unlocker handed us the lock via
-			// direct handoff: state already has the locked bit
-			// set, and our waiter slot has been decremented.
-			//
-			// Race-detector synchronization: sync.runtime_Semacquire
-			// and sync.runtime_Semrelease are linkname'd from
-			// outside package sync, so they do not carry the
-			// race.Acquire/Release annotations that sync.Mutex
-			// uses to teach the race detector about lock handoffs.
-			// Reading state here creates an atomic happens-before
-			// edge with unlockSlow's CAS, which is enough for the
-			// race detector. Without this load, -race reports a
-			// false data race on values protected by this mutex.
-			_ = m.state.Load()
-			return
-		}
-	}
+	panic("phase2: lockSlow not yet implemented")
 }
 
 // Unlock releases m. Panics if m is not locked on entry.
@@ -122,21 +94,7 @@ func (m *Mutex) Unlock() {
 
 // unlockSlow handles the waiter handoff path.
 func (m *Mutex) unlockSlow() {
-	for {
-		old := m.state.Load()
-		if old&mutexLocked == 0 {
-			panic("sync: unlock of unlocked mutex")
-		}
-		// Hand off: keep the locked bit set (transferred to the
-		// waker), decrement the waiter count.
-		if m.state.CompareAndSwap(old, old-mutexWaiterUnit) {
-			// handoff=true makes the released permit
-			// consumed by the head waiter directly via
-			// cansemacquire — no new arrival can steal it.
-			runtime_Semrelease(&m.sema, true, 1)
-			return
-		}
-	}
+	panic("phase2: unlockSlow not yet implemented")
 }
 
 // TryLock attempts to acquire m without blocking. Unlike
