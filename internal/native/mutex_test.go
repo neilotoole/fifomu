@@ -3,6 +3,7 @@ package native_test
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/neilotoole/fifomu/internal/native"
 )
@@ -74,4 +75,54 @@ func TestMutex_UnlockOfUnlockedPanics(t *testing.T) {
 	}()
 	var mu native.Mutex
 	mu.Unlock()
+}
+
+// TestMutex_FIFO_Smoke is a probabilistic FIFO check. It cannot
+// guarantee strict FIFO (the runtime sema queue ordering across
+// the gap between "atomic state CAS" and "actually parked" is not
+// strictly bounded), but a high-N test with deliberate stagger
+// between Lock calls reliably catches gross reorderings.
+func TestMutex_FIFO_Smoke(t *testing.T) {
+	const N = 32
+	var mu native.Mutex
+	mu.Lock() // hold the lock so everyone queues
+
+	order := make(chan int, N)
+	var wg sync.WaitGroup
+	for i := range N {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mu.Lock()
+			order <- i
+			mu.Unlock()
+		}()
+		// Stagger to ensure goroutines reach the parking point in
+		// arrival order. Without this, the test sometimes fires
+		// even for a correct FIFO impl.
+		time.Sleep(200 * time.Microsecond)
+	}
+
+	mu.Unlock()
+	wg.Wait()
+	close(order)
+
+	var got []int
+	for v := range order {
+		got = append(got, v)
+	}
+
+	for i, v := range got {
+		if v != i {
+			t.Fatalf("acquisition order = %v, want %v (mismatch at position %d)", got, want(N), i)
+		}
+	}
+}
+
+func want(n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
 }
