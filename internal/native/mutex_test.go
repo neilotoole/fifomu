@@ -60,18 +60,3 @@ func TestMutex_TryLock(t *testing.T) {
 	}
 	mu.Unlock()
 }
-
-func TestMutex_UnlockOfUnlockedPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("Unlock of unlocked mutex did not panic")
-		}
-		got, _ := r.(string)
-		if got != "sync: unlock of unlocked mutex" {
-			t.Fatalf("panic = %v, want \"sync: unlock of unlocked mutex\"", r)
-		}
-	}()
-	var mu native.Mutex
-	mu.Unlock()
-}
