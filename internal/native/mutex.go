@@ -52,6 +52,17 @@ func (m *Mutex) lockSlow() {
 			// On wake, the unlocker handed us the lock via
 			// direct handoff: state already has the locked bit
 			// set, and our waiter slot has been decremented.
+			//
+			// Race-detector synchronization: sync.runtime_Semacquire
+			// and sync.runtime_Semrelease are linkname'd from
+			// outside package sync, so they do not carry the
+			// race.Acquire/Release annotations that sync.Mutex
+			// uses to teach the race detector about lock handoffs.
+			// Reading state here creates an atomic happens-before
+			// edge with unlockSlow's CAS, which is enough for the
+			// race detector. Without this load, -race reports a
+			// false data race on values protected by this mutex.
+			_ = m.state.Load()
 			return
 		}
 	}
