@@ -149,7 +149,98 @@ func (m *Mutex) ensureSentinel() {
 // lockSlow is the slow path for both Lock (ctx=context.Background())
 // and LockContext (ctx with cancellable Done()).
 func (m *Mutex) lockSlow(ctx context.Context) error {
-	panic("phase3: lockSlow not yet implemented")
+	// Lazy-init the sentinel before the first enqueue.
+	m.ensureSentinel()
+
+	// Retry loop: covers the race where fast-path Unlock clears
+	// the locked bit between our state observation and our
+	// state.Add. We undo and retry rather than getting stranded as
+	// a phantom waiter with no holder.
+	for {
+		// One more fast-acquire attempt before allocating a waiter.
+		if m.state.CompareAndSwap(0, mutexLocked) {
+			return nil
+		}
+
+		// Allocate waiter: Lock callers use the pool; LockContext
+		// callers use fresh allocations (see spec for rationale on
+		// the stale-Semrelease class of bug).
+		var w *waiter
+		fromPool := ctx.Done() == nil
+		if fromPool {
+			w = waiterPool.Get().(*waiter)
+		} else {
+			w = new(waiter)
+		}
+		w.state.Store(waiterParked)
+		w.next.Store(nil)
+
+		// Bump waiter count BEFORE enqueueing. If the lock was
+		// freed between our last check and this Add, undo and retry.
+		newState := m.state.Add(mutexWaiterUnit)
+		if newState&mutexLocked == 0 {
+			m.state.Add(^uint32(mutexWaiterUnit - 1))
+			if fromPool {
+				w.resetForPool()
+				waiterPool.Put(w)
+			}
+			continue
+		}
+
+		// Enqueue: atomic swap of tail + link from oldTail.
+		// Sentinel guarantees oldTail is non-nil after init.
+		oldTail := m.tail.Swap(w)
+		oldTail.next.Store(w)
+
+		// Park.
+		if ctx.Done() == nil {
+			runtime_Semacquire(&w.sema)
+			// Race-detector synchronization edge with unlocker's
+			// CAS on w.state (sema is linkname'd and lacks
+			// race.Acquire/Release annotations).
+			_ = w.state.Load()
+			w.resetForPool()
+			waiterPool.Put(w)
+			return nil
+		}
+
+		// LockContext: watch ctx.Done in parallel with Semacquire.
+		var cancelled atomic.Bool
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				if w.state.CompareAndSwap(waiterParked, waiterCancelled) {
+					// We tombstoned the entry before Unlock could
+					// pick it. Signal G via the heap variable, then
+					// wake G's Semacquire.
+					cancelled.Store(true)
+					runtime_Semrelease(&w.sema, false, 0)
+				}
+				// CAS failure → Unlock won; do nothing.
+			case <-done:
+			}
+		}()
+		runtime_Semacquire(&w.sema)
+		close(done)
+
+		if cancelled.Load() {
+			// Watcher won the race. The waiter stays in the queue
+			// (Unlock will dequeue it and observe the tombstone via
+			// its own CAS failure). Do NOT touch w here — its
+			// memory is owned by Unlock from now on. Since we
+			// allocated fresh (no pool), there's nothing to return.
+			return context.Cause(ctx)
+		}
+		// Unlock won. We exclusively own w; recycle if it's pooled.
+		// (For LockContext-fresh waiters, the resetForPool is a
+		// no-op but harmless; we don't put fresh waiters back.)
+		if fromPool {
+			w.resetForPool()
+			waiterPool.Put(w)
+		}
+		return nil
+	}
 }
 
 // unlockSlow walks the lock-free queue, skipping tombstoned
