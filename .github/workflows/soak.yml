@@ -1,0 +1,90 @@
+# Soak test: run the test suite over and over for a long time, to give
+# rare goroutine interleavings a chance to occur. The lock-free paths in
+# fifomu.Mutex are only as good as the invariants documented in fifomu.go,
+# and the bugs worth fearing there (a lost wakeup, two holders at once)
+# may need one particular schedule out of billions.
+#
+# It is not part of normal CI. Run it before a release, or after any
+# change to the locking code:
+#
+#   - From the Actions tab ("Run workflow"), or
+#     `gh workflow run soak.yml --ref <branch> -f minutes=60`.
+#   - On a pull request, by adding the `soak` label. (Re-add the label to
+#     run it again.) Runs use the default duration.
+#
+# A clean run raises confidence; it proves nothing.
+
+name: Soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes to soak, per matrix job
+        default: '30'
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+# A newer soak of the same ref replaces a running one. The label is part
+# of the group so that adding some other label to a pull request (which
+# also triggers this workflow, to be skipped below) doesn't cancel a soak.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event.label.name || 'manual' }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  soak:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'soak'
+    strategy:
+      # One configuration failing is no reason to stop exploring the others.
+      fail-fast: false
+      matrix:
+        # x86-64 and arm64 have different memory-ordering behavior, which
+        # is exactly where a lock-free bug could hide.
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+        # The race detector catches unsynchronized access, but slows
+        # everything down and so explores different schedules than a
+        # plain build does.
+        race: [race, norace]
+        # Low values force preemption at awkward points; 16 oversubscribes
+        # the runner's cores, so goroutines are descheduled mid-operation.
+        gomaxprocs: [1, 2, 4, 16]
+    name: soak (${{ matrix.os }}, ${{ matrix.race }}, GOMAXPROCS=${{ matrix.gomaxprocs }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    env:
+      MINUTES: ${{ inputs.minutes || '30' }}
+      GOMAXPROCS: ${{ matrix.gomaxprocs }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build test binary
+        run: go test -c ${{ matrix.race == 'race' && '-race' || '' }} -o fifomu.test .
+
+      # Each pass runs the whole suite in a fresh process, in shuffled
+      # order. The first failing pass stops the job and prints its output.
+      # -test.timeout turns a deadlock into a failure with a goroutine dump.
+      - name: Soak
+        run: |
+          end=$((SECONDS + MINUTES * 60))
+          passes=0
+          while [ "$SECONDS" -lt "$end" ]; do
+            if ! ./fifomu.test -test.shuffle=on -test.timeout=10m > pass.log 2>&1; then
+              echo "::error::soak failed on pass $((passes + 1))"
+              cat pass.log
+              exit 1
+            fi
+            passes=$((passes + 1))
+          done
+          echo "$passes passes in $MINUTES minutes, 0 failures" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -116,7 +116,7 @@ func foo(ctx context.Context) error {
 Two caveats for `LockContext`:
 
 - If `ctx` is already done when `LockContext` is called and the lock is
-  available with no queued waiters, `LockContext` may still succeed without
+  available with no callers waiting, `LockContext` may still succeed without
   blocking.
 - If the mutex becomes available concurrently with `ctx` cancellation,
   `LockContext` may acquire the mutex and return `nil` even though `ctx`

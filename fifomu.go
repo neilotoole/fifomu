@@ -202,8 +202,8 @@ func (m *Mutex) lockSlow(t uint64) {
 // If the lock is already in use, the calling goroutine
 // blocks until the mutex is available or ctx is done.
 //
-// On failure, LockContext returns context.Cause(ctx) and
-// leaves the mutex unchanged.
+// On failure, LockContext returns context.Cause(ctx), and the
+// caller does not hold the mutex.
 //
 // If ctx is already done when LockContext is called and the
 // lock is available with no callers waiting for it, LockContext
