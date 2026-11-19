@@ -93,9 +93,13 @@ func requireUnlockPanics(t *testing.T, m *Mutex) {
 // handed to it. Nobody signals it; it must notice, under the inner
 // mutex, that its ticket is being served.
 func TestLock_InFlightHolderFindsTicketServed(t *testing.T) {
-	lockers := map[string]func(m *Mutex) error{
-		"Lock":        func(m *Mutex) error { m.Lock(); return nil },
-		"LockContext": func(m *Mutex) error { return m.LockContext(context.Background()) },
+	lockers := map[string]func(t *testing.T, m *Mutex){
+		"Lock": func(_ *testing.T, m *Mutex) { m.Lock() },
+		"LockContext": func(t *testing.T, m *Mutex) {
+			if err := m.LockContext(context.Background()); err != nil {
+				t.Error(err)
+			}
+		},
 	}
 	for name, lock := range lockers {
 		t.Run(name, func(t *testing.T) {
@@ -104,8 +108,11 @@ func TestLock_InFlightHolderFindsTicketServed(t *testing.T) {
 				m.Lock() // ticket 0
 
 				m.mu.Lock()
-				acquired := make(chan error, 1)
-				go func() { acquired <- lock(&m) }() // ticket 1, blocks on m.mu
+				acquired := make(chan struct{})
+				go func() { // ticket 1, blocks on m.mu
+					lock(t, &m)
+					close(acquired)
+				}()
 				waitFor(t, "ticket 1 to be taken", func() bool { return m.next.Load() == 2 })
 
 				unlocked := make(chan struct{})
@@ -116,14 +123,7 @@ func TestLock_InFlightHolderFindsTicketServed(t *testing.T) {
 				waitFor(t, "serving to advance", func() bool { return m.serving.Load() == 1 })
 				m.mu.Unlock()
 
-				select {
-				case err := <-acquired:
-					if err != nil {
-						t.Fatal(err)
-					}
-				case <-time.After(5 * time.Second):
-					t.Fatal("in-flight holder never noticed that its ticket was served")
-				}
+				requireAcquires(t, "in-flight holder", acquired)
 				<-unlocked
 				if n := WaitersLen(&m); n != 0 {
 					t.Fatalf("waiters = %d, want 0", n)
