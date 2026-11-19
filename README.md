@@ -314,8 +314,6 @@ branch.
 - These numbers come from shared GitHub-hosted runners (`ubuntu-latest`),
   so they are noisy and not comparable to the M1 figures above. Read them
   as a trend, not as absolute performance.
-- A benchmark that becomes 2× slower or worse than the previous result
-  triggers a regression comment on the commit. Alerts never fail the build.
 - Pull requests are not compared against that history, because runners
   differ too much from run to run. Instead, CI benchmarks the PR's base
   and head commits alternately on one runner and reports the difference

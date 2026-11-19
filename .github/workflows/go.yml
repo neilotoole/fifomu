@@ -75,10 +75,10 @@ jobs:
       - name: Benchmark
         run: go test -bench=. -benchmem -run=^$ ./...
 
-  # Track benchmark performance over time and alert on regressions.
-  # Runs only on pushes to master: storing history and posting alert comments
-  # need a writable token, which PRs from forks/Dependabot don't get. Pinned
-  # to a single OS so numbers are comparable run-to-run.
+  # Track benchmark performance over time. Runs only on pushes to master:
+  # storing history needs a writable token, which PRs from forks/Dependabot
+  # don't get. Pinned to a single OS, but ubuntu-latest still hands out
+  # different CPU models from run to run, so read the results as a trend.
   bench:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -97,10 +97,11 @@ jobs:
         run: go test -bench=. -benchmem -run=^$ ./... | tee benchmark-output.txt
 
       # Appends the result to the orphan `benchmark-data` branch (a trend
-      # chart lives at dev/bench/index.html there). alert-threshold 200%
-      # tolerates shared-runner variance; fail-on-alert is false so a noisy
-      # spike comments but never reddens the build.
-      - name: Store benchmark result and alert on regression
+      # chart lives at dev/bench/index.html there). Regression alerts are
+      # off: consecutive runs often land on different CPU models, which
+      # made unchanged code look more than 3x slower and fired false
+      # alarms. Regressions are caught at PR time by bench-compare.
+      - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: fifomu benchmarks
@@ -109,10 +110,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-pages-branch: benchmark-data
           auto-push: true
-          alert-threshold: '200%'
-          comment-on-alert: true
+          comment-on-alert: false
           fail-on-alert: false
-          alert-comment-cc-users: '@neilotoole'
 
   # PR-time comparison: benchmark the PR's base and head commits inside
   # one job, so both run on the same VM. Comparing against the result
