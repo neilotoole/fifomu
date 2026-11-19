@@ -67,7 +67,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       - name: Build test binary
         run: go test -c ${{ matrix.race == 'race' && '-race' || '' }} -o fifomu.test .

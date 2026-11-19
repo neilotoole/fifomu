@@ -24,6 +24,10 @@ defaults:
   run:
     shell: bash
 
+# Go versions: build-test runs on the oldest supported Go and the current
+# one. Every other job uses `stable`, the current release. They don't read
+# the version from go.mod, because its `go 1.26.0` line would pin them to
+# that exact patch release instead of the latest 1.26.x.
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -34,17 +38,24 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          # Dependabot does not track this input: bump it by hand, and
+          # keep it in step with the version used locally.
+          version: v2.15.0
 
   build-test:
     strategy:
       matrix:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
+        # The oldest Go the module supports (the `go` line in go.mod) and
+        # the current release. Update both when go.mod's minimum moves or
+        # a new Go is released.
+        go: [ '1.26', '1.27' ]
+    name: build-test (${{ matrix.os }}, go ${{ matrix.go }})
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -52,7 +63,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
 
       - name: Build
         run: go build -v ./...
@@ -60,12 +71,12 @@ jobs:
       - name: Test
         run: go test -race -shuffle=on -covermode=atomic -coverprofile=coverage.out -v ./...
 
-      # Upload coverage once (from the Linux leg); the profile is identical
+      # Upload coverage once (from one Linux leg); the profile is identical
       # across the matrix for this pure-Go package. Requires the CODECOV_TOKEN
       # repo secret. fail_ci_if_error stays false so a flaky upload or a
       # missing token can't break an otherwise-green build.
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27'
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.out
@@ -93,7 +104,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       - name: Model-check the locking protocol
         env:
@@ -119,7 +130,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       # GitHub's bash runs with `set -o pipefail`, so a failing `go test`
       # still fails this step despite the pipe into tee.
@@ -173,7 +184,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: head/go.mod
+          go-version: stable
           cache-dependency-path: |
             head/go.sum
             base/go.sum

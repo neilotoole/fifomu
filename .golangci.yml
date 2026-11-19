@@ -59,7 +59,7 @@ linters:
     exhaustive:
       check:
         - switch
-        - map
+        - mapliteral
     funlen:
       lines: 150
       statements: 100
@@ -405,7 +405,8 @@ formatters:
   settings:
     gofumpt:
       module-path: github.com/neilotoole/fifomu
-      extra-rules: true
+      extra:
+        group-params: true
   exclusions:
     generated: lax
     paths:
