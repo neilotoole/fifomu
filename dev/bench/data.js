@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1779570882530,
+  "lastUpdate": 1795056602140,
   "repoUrl": "https://github.com/neilotoole/fifomu",
   "entries": {
     "fifomu benchmarks": [
@@ -1200,6 +1200,606 @@ window.BENCHMARK_DATA = {
             "value": 2,
             "unit": "allocs/op",
             "extra": "427302 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c5c0734ae7b101ab5ac4c44cc4c423f5dba50e40",
+          "message": "build(deps): bump actions/setup-go from 6 to 7 (#11)\n\nBumps [actions/setup-go](https://github.com/actions/setup-go) from 6 to 7.\n- [Release notes](https://github.com/actions/setup-go/releases)\n- [Commits](https://github.com/actions/setup-go/compare/v6...v7)\n\n---\nupdated-dependencies:\n- dependency-name: actions/setup-go\n  dependency-version: '7'\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-18T19:49:04-07:00",
+          "tree_id": "976160adc73c3646698c7672375e3f0b9f5e1967",
+          "url": "https://github.com/neilotoole/fifomu/commit/c5c0734ae7b101ab5ac4c44cc4c423f5dba50e40"
+        },
+        "date": 1795056601821,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkLockContext_FastPath",
+            "value": 5.317,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "225525224 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_FastPath - ns/op",
+            "value": 5.317,
+            "unit": "ns/op",
+            "extra": "225525224 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_FastPath - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "225525224 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_FastPath - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "225525224 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_Contended",
+            "value": 268.1,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "4391967 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_Contended - ns/op",
+            "value": 268.1,
+            "unit": "ns/op",
+            "extra": "4391967 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_Contended - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "4391967 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_Contended - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "4391967 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_Cancel",
+            "value": 127.1,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "9513676 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_Cancel - ns/op",
+            "value": 127.1,
+            "unit": "ns/op",
+            "extra": "9513676 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_Cancel - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "9513676 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkLockContext_Cancel - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "9513676 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/stdlib",
+            "value": 2.196,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "536481604 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/stdlib - ns/op",
+            "value": 2.196,
+            "unit": "ns/op",
+            "extra": "536481604 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/stdlib - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "536481604 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/stdlib - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "536481604 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/fifomu",
+            "value": 5.317,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "225640568 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/fifomu - ns/op",
+            "value": 5.317,
+            "unit": "ns/op",
+            "extra": "225640568 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/fifomu - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "225640568 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/fifomu - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "225640568 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/semaphoreMu",
+            "value": 7.504,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "159491313 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/semaphoreMu - ns/op",
+            "value": 7.504,
+            "unit": "ns/op",
+            "extra": "159491313 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/semaphoreMu - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "159491313 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexUncontended/semaphoreMu - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "159491313 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/stdlib",
+            "value": 15.76,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "76013583 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/stdlib - ns/op",
+            "value": 15.76,
+            "unit": "ns/op",
+            "extra": "76013583 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/stdlib - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "76013583 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/stdlib - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "76013583 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/fifomu",
+            "value": 213.4,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "5604828 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/fifomu - ns/op",
+            "value": 213.4,
+            "unit": "ns/op",
+            "extra": "5604828 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/fifomu - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "5604828 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/fifomu - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "5604828 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/semaphoreMu",
+            "value": 411.2,
+            "unit": "ns/op\t     175 B/op\t       2 allocs/op",
+            "extra": "2917618 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/semaphoreMu - ns/op",
+            "value": 411.2,
+            "unit": "ns/op",
+            "extra": "2917618 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/semaphoreMu - B/op",
+            "value": 175,
+            "unit": "B/op",
+            "extra": "2917618 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutex/semaphoreMu - allocs/op",
+            "value": 2,
+            "unit": "allocs/op",
+            "extra": "2917618 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/stdlib",
+            "value": 112.6,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "11116780 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/stdlib - ns/op",
+            "value": 112.6,
+            "unit": "ns/op",
+            "extra": "11116780 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/stdlib - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "11116780 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/stdlib - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "11116780 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/fifomu",
+            "value": 218.3,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "5490150 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/fifomu - ns/op",
+            "value": 218.3,
+            "unit": "ns/op",
+            "extra": "5490150 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/fifomu - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "5490150 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/fifomu - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "5490150 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/semaphoreMu",
+            "value": 397.4,
+            "unit": "ns/op\t     175 B/op\t       2 allocs/op",
+            "extra": "3006414 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/semaphoreMu - ns/op",
+            "value": 397.4,
+            "unit": "ns/op",
+            "extra": "3006414 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/semaphoreMu - B/op",
+            "value": 175,
+            "unit": "B/op",
+            "extra": "3006414 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSlack/semaphoreMu - allocs/op",
+            "value": 2,
+            "unit": "allocs/op",
+            "extra": "3006414 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/stdlib",
+            "value": 49.96,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "23856696 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/stdlib - ns/op",
+            "value": 49.96,
+            "unit": "ns/op",
+            "extra": "23856696 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/stdlib - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "23856696 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/stdlib - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "23856696 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/fifomu",
+            "value": 251.1,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "4617782 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/fifomu - ns/op",
+            "value": 251.1,
+            "unit": "ns/op",
+            "extra": "4617782 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/fifomu - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "4617782 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/fifomu - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "4617782 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/semaphoreMu",
+            "value": 457.6,
+            "unit": "ns/op\t     175 B/op\t       2 allocs/op",
+            "extra": "2590416 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/semaphoreMu - ns/op",
+            "value": 457.6,
+            "unit": "ns/op",
+            "extra": "2590416 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/semaphoreMu - B/op",
+            "value": 175,
+            "unit": "B/op",
+            "extra": "2590416 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWork/semaphoreMu - allocs/op",
+            "value": 2,
+            "unit": "allocs/op",
+            "extra": "2590416 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/stdlib",
+            "value": 110.4,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "11510379 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/stdlib - ns/op",
+            "value": 110.4,
+            "unit": "ns/op",
+            "extra": "11510379 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/stdlib - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "11510379 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/stdlib - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "11510379 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/fifomu",
+            "value": 258.7,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "4543825 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/fifomu - ns/op",
+            "value": 258.7,
+            "unit": "ns/op",
+            "extra": "4543825 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/fifomu - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "4543825 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/fifomu - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "4543825 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/semaphoreMu",
+            "value": 459.7,
+            "unit": "ns/op\t     175 B/op\t       2 allocs/op",
+            "extra": "2580319 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/semaphoreMu - ns/op",
+            "value": 459.7,
+            "unit": "ns/op",
+            "extra": "2580319 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/semaphoreMu - B/op",
+            "value": 175,
+            "unit": "B/op",
+            "extra": "2580319 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexWorkSlack/semaphoreMu - allocs/op",
+            "value": 2,
+            "unit": "allocs/op",
+            "extra": "2580319 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/stdlib",
+            "value": 289.8,
+            "unit": "ns/op\t      12 B/op\t       0 allocs/op",
+            "extra": "4141886 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/stdlib - ns/op",
+            "value": 289.8,
+            "unit": "ns/op",
+            "extra": "4141886 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/stdlib - B/op",
+            "value": 12,
+            "unit": "B/op",
+            "extra": "4141886 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/stdlib - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "4141886 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/fifomu",
+            "value": 812.8,
+            "unit": "ns/op\t      12 B/op\t       0 allocs/op",
+            "extra": "1439848 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/fifomu - ns/op",
+            "value": 812.8,
+            "unit": "ns/op",
+            "extra": "1439848 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/fifomu - B/op",
+            "value": 12,
+            "unit": "B/op",
+            "extra": "1439848 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/fifomu - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "1439848 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/semaphoreMu",
+            "value": 1149,
+            "unit": "ns/op\t      55 B/op\t       1 allocs/op",
+            "extra": "1000000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/semaphoreMu - ns/op",
+            "value": 1149,
+            "unit": "ns/op",
+            "extra": "1000000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/semaphoreMu - B/op",
+            "value": 55,
+            "unit": "B/op",
+            "extra": "1000000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexNoSpin/semaphoreMu - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "1000000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/stdlib",
+            "value": 1043,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "1000000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/stdlib - ns/op",
+            "value": 1043,
+            "unit": "ns/op",
+            "extra": "1000000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/stdlib - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "1000000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/stdlib - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "1000000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/fifomu",
+            "value": 2418,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "494186 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/fifomu - ns/op",
+            "value": 2418,
+            "unit": "ns/op",
+            "extra": "494186 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/fifomu - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "494186 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/fifomu - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "494186 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/semaphoreMu",
+            "value": 3011,
+            "unit": "ns/op\t     175 B/op\t       2 allocs/op",
+            "extra": "398820 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/semaphoreMu - ns/op",
+            "value": 3011,
+            "unit": "ns/op",
+            "extra": "398820 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/semaphoreMu - B/op",
+            "value": 175,
+            "unit": "B/op",
+            "extra": "398820 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkMutexSpin/semaphoreMu - allocs/op",
+            "value": 2,
+            "unit": "allocs/op",
+            "extra": "398820 times\n4 procs"
           }
         ]
       }
