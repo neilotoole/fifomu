@@ -79,6 +79,12 @@ jobs:
       # deterministic, so repeating them finds nothing new.
       - name: Soak
         run: |
+          case "$MINUTES" in
+            ''|*[!0-9]*|0*)
+              echo "::error::minutes must be a positive whole number, got '$MINUTES'"
+              exit 1
+              ;;
+          esac
           end=$((SECONDS + MINUTES * 60))
           passes=0
           while [ "$SECONDS" -lt "$end" ]; do
@@ -90,4 +96,8 @@ jobs:
             fi
             passes=$((passes + 1))
           done
+          if [ "$passes" -eq 0 ]; then
+            echo "::error::no pass completed in $MINUTES minutes"
+            exit 1
+          fi
           echo "$passes passes in $MINUTES minutes, 0 failures" | tee -a "$GITHUB_STEP_SUMMARY"

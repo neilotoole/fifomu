@@ -280,6 +280,34 @@ func TestLockContext_AbandonTicketBeingServed(t *testing.T) {
 	})
 }
 
+// causeProbeCtx is a cancelable Context that reports when LockContext
+// asks it why it is done. LockContext only does that, through
+// context.Cause, on the cancel arm of its select, just before it takes
+// the inner mutex; so a test can use the report to know that the
+// cancel arm was the one taken. Which of Err and Value context.Cause
+// consults is its own business, so both report.
+type causeProbeCtx struct {
+	context.Context
+	asked chan struct{}
+}
+
+func (c *causeProbeCtx) report() {
+	select {
+	case c.asked <- struct{}{}:
+	default:
+	}
+}
+
+func (c *causeProbeCtx) Err() error {
+	c.report()
+	return c.Context.Err()
+}
+
+func (c *causeProbeCtx) Value(key any) any {
+	c.report()
+	return c.Context.Value(key)
+}
+
 // TestLockContext_SignalBeatsCancel covers the cancel handler finding
 // that its waiter was signaled after all: ctx fired, but before the
 // handler got the inner mutex, an unlocker handed it the mutex.
@@ -289,14 +317,23 @@ func TestLockContext_SignalBeatsCancel(t *testing.T) {
 		var m Mutex
 		m.Lock() // ticket 0
 
-		w := queueLockContext(t, &m) // ticket 1
+		parent, cancel := context.WithCancel(context.Background())
+		ctx := &causeProbeCtx{Context: parent, asked: make(chan struct{}, 1)}
+		done := make(chan error, 1)
+		go func() { done <- m.LockContext(ctx) }() // ticket 1
+		waitFor(t, "LockContext to queue", func() bool { return WaitersLen(&m) == 1 })
 
+		// Hold the inner mutex, cancel, and wait until the waiter has
+		// committed to the cancel arm of its select. It cannot get
+		// any further than m.mu.Lock().
 		m.mu.Lock()
-		w.cancel()
-		// Give the waiter time to wake on ctx.Done and block on m.mu.
-		// If it hasn't, its select sees both arms ready and may take
-		// either; the assertions below hold both ways.
-		time.Sleep(200 * time.Microsecond)
+		cancel()
+		select {
+		case <-ctx.asked:
+		case <-time.After(5 * time.Second):
+			m.mu.Unlock()
+			t.Fatal("waiter did not take the cancel arm")
+		}
 
 		// Unlock, by hand, since we already hold m.mu.
 		if !m.serving.CompareAndSwap(0, 1) {
@@ -305,7 +342,7 @@ func TestLockContext_SignalBeatsCancel(t *testing.T) {
 		m.handoff()
 		m.mu.Unlock()
 
-		if err := <-w.done; err != nil {
+		if err := <-done; err != nil {
 			t.Fatalf("LockContext = %v, want nil: it was handed the mutex", err)
 		}
 		if m.TryLock() {

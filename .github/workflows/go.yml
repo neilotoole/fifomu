@@ -98,7 +98,7 @@ jobs:
   # scenarios run one call at a time.
   exhaustive:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -106,10 +106,15 @@ jobs:
         with:
           go-version: stable
 
+      # FIFOMU_MODEL bounds the programs made of correct calls;
+      # FIFOMU_MODEL_MISUSE bounds those that also contain a stray
+      # Unlock, where the checker only requires that the mutex is not
+      # left broken.
       - name: Model-check the locking protocol
         env:
           FIFOMU_MODEL: 2x4,3x2,4x1
-        run: go test -run '^TestModel_' -v -timeout 25m .
+          FIFOMU_MODEL_MISUSE: 2x4,3x2,4x1
+        run: go test -run '^TestModel_' -v -timeout 45m .
 
       - name: Enumerate API scenarios
         env:
@@ -173,8 +178,12 @@ jobs:
       # difference significant at its default confidence level.
       ROUNDS: 6
     steps:
+      # Check out the PR's head commit explicitly. The default for a
+      # pull_request event is a merge of the head into the base, which
+      # is not the commit the summary below names.
       - uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           path: head
 
       - uses: actions/checkout@v7

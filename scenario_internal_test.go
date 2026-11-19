@@ -262,8 +262,16 @@ func (sc *scenario) drain() {
 			break
 		}
 		w := sc.queue[0]
-		if err := <-w.done; err != nil {
-			sc.t.Errorf("scenario %q, drain: waiter failed: %v", sc.script, err)
+		select {
+		case err := <-w.done:
+			if err != nil {
+				sc.t.Errorf("scenario %q, drain: waiter failed: %v", sc.script, err)
+			}
+		case <-time.After(5 * time.Second):
+			// Fatal, not Error: the waiter's goroutine is stuck in
+			// Lock, and so would every scenario after this one be.
+			sc.t.Fatalf("scenario %q, drain: the front waiter (of %d) was not handed the mutex",
+				sc.script, len(sc.queue))
 		}
 		if w.cancel != nil {
 			w.cancel()
