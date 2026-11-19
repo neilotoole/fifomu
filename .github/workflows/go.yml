@@ -24,6 +24,10 @@ defaults:
   run:
     shell: bash
 
+# Go versions: build-test runs on the oldest supported Go and the current
+# one. Every other job uses `stable`, the current release. They don't read
+# the version from go.mod, because its `go 1.26.0` line would pin them to
+# that exact patch release instead of the latest 1.26.x.
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -34,17 +38,24 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.12.2
+          # Dependabot does not track this input: bump it by hand, and
+          # keep it in step with the version used locally.
+          version: v2.15.0
 
   build-test:
     strategy:
       matrix:
         os: [ ubuntu-latest, macos-latest, windows-latest ]
+        # The oldest Go the module supports (the `go` line in go.mod) and
+        # the current release. Update both when go.mod's minimum moves or
+        # a new Go is released.
+        go: [ '1.26', '1.27' ]
+    name: build-test (${{ matrix.os }}, go ${{ matrix.go }})
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -52,7 +63,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: ${{ matrix.go }}
 
       - name: Build
         run: go build -v ./...
@@ -60,12 +71,12 @@ jobs:
       - name: Test
         run: go test -race -shuffle=on -covermode=atomic -coverprofile=coverage.out -v ./...
 
-      # Upload coverage once (from the Linux leg); the profile is identical
+      # Upload coverage once (from one Linux leg); the profile is identical
       # across the matrix for this pure-Go package. Requires the CODECOV_TOKEN
       # repo secret. fail_ci_if_error stays false so a flaky upload or a
       # missing token can't break an otherwise-green build.
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27'
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.out
@@ -75,10 +86,45 @@ jobs:
       - name: Benchmark
         run: go test -bench=. -benchmem -run=^$ ./...
 
-  # Track benchmark performance over time and alert on regressions.
-  # Runs only on pushes to master: storing history and posting alert comments
-  # need a writable token, which PRs from forks/Dependabot don't get. Pinned
-  # to a single OS so numbers are comparable run-to-run.
+  # Exhaustive checks, at bounds too slow for every `go test` run:
+  #
+  #   - TestModel_ExhaustiveInterleavings explores every interleaving of
+  #     a model of the locking protocol, for small numbers of threads.
+  #   - TestScenarios_Exhaustive runs every sequence of API calls up to a
+  #     given length against a reference model.
+  #
+  # Both also run, at smaller bounds, as part of build-test. No race
+  # detector here: the model checker is single-threaded, and the
+  # scenarios run one call at a time.
+  exhaustive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      # FIFOMU_MODEL bounds the programs made of correct calls;
+      # FIFOMU_MODEL_MISUSE bounds those that also contain a stray
+      # Unlock, where the checker only requires that the mutex is not
+      # left broken.
+      - name: Model-check the locking protocol
+        env:
+          FIFOMU_MODEL: 2x4,3x2,4x1
+          FIFOMU_MODEL_MISUSE: 2x4,3x2,4x1
+        run: go test -run '^TestModel_' -v -timeout 45m .
+
+      - name: Enumerate API scenarios
+        env:
+          FIFOMU_SCENARIO_LEN: 8
+        run: go test -run '^TestScenarios_' -v -timeout 25m .
+
+  # Track benchmark performance over time. Runs only on pushes to master:
+  # storing history needs a writable token, which PRs from forks/Dependabot
+  # don't get. Pinned to a single OS, but ubuntu-latest still hands out
+  # different CPU models from run to run, so read the results as a trend.
   bench:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -89,7 +135,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
 
       # GitHub's bash runs with `set -o pipefail`, so a failing `go test`
       # still fails this step despite the pipe into tee.
@@ -97,10 +143,11 @@ jobs:
         run: go test -bench=. -benchmem -run=^$ ./... | tee benchmark-output.txt
 
       # Appends the result to the orphan `benchmark-data` branch (a trend
-      # chart lives at dev/bench/index.html there). alert-threshold 200%
-      # tolerates shared-runner variance; fail-on-alert is false so a noisy
-      # spike comments but never reddens the build.
-      - name: Store benchmark result and alert on regression
+      # chart lives at dev/bench/index.html there). Regression alerts are
+      # off: consecutive runs often land on different CPU models, which
+      # made unchanged code look more than 3x slower and fired false
+      # alarms. Regressions are caught at PR time by bench-compare.
+      - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: fifomu benchmarks
@@ -109,53 +156,71 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           gh-pages-branch: benchmark-data
           auto-push: true
-          alert-threshold: '200%'
-          comment-on-alert: true
+          comment-on-alert: false
           fail-on-alert: false
-          alert-comment-cc-users: '@neilotoole'
 
-  # PR-time comparison: benchmark the PR head and compare it against the
-  # master baseline stored on benchmark-data, without writing the PR's own
-  # numbers back to history. Skipped for forks and Dependabot, whose
-  # pull_request GITHUB_TOKEN is read-only and can neither read secrets nor
-  # post comments — running there would only error.
-  bench-pr:
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
+  # PR-time comparison: benchmark the PR's base and head commits inside
+  # one job, so both run on the same VM. Comparing against the result
+  # stored on benchmark-data doesn't work: ubuntu-latest hands out whatever
+  # CPU model is free, so that result usually comes from different
+  # hardware, and unchanged code can appear several times slower.
+  #
+  # The two test binaries run alternately, so drift in a noisy shared
+  # runner is spread across both sides, and benchstat reports which
+  # differences are statistically significant. Needs only read access, so
+  # it also runs for forks. Results are informational: the job fails only
+  # if a build or benchmark run fails.
+  bench-compare:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read # fetch the baseline branch
-      pull-requests: write # post the comparison comment
+    env:
+      # Rounds per side. benchstat needs at least 6 samples to call a
+      # difference significant at its default confidence level.
+      ROUNDS: 6
     steps:
+      # Check out the PR's head commit explicitly. The default for a
+      # pull_request event is a merge of the head into the base, which
+      # is not the commit the summary below names.
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: head
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
 
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
+          cache-dependency-path: |
+            head/go.sum
+            base/go.sum
 
-      - name: Run benchmarks
-        run: go test -bench=. -benchmem -run=^$ ./... | tee benchmark-output.txt
+      - name: Build benchmark binaries
+        run: |
+          (cd base && go test -c -o ../base.test .)
+          (cd head && go test -c -o ../head.test .)
 
-      # Compares against the latest benchmark-data entry. summary-always
-      # renders the full diff in the run summary every time; comment-on-alert
-      # posts a PR comment only on a >=200% regression. auto-push/save-data-file
-      # are off so PR numbers never enter the master trend, and fail-on-alert
-      # is off so the check never reddens.
-      - name: Compare against baseline
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          name: fifomu benchmarks
-          tool: go
-          output-file-path: benchmark-output.txt
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          gh-pages-branch: benchmark-data
-          auto-push: false
-          save-data-file: false
-          summary-always: true
-          alert-threshold: '200%'
-          comment-on-alert: true
-          fail-on-alert: false
-          alert-comment-cc-users: '@neilotoole'
+      - name: Run benchmarks (base and head interleaved)
+        run: |
+          for i in $(seq "$ROUNDS"); do
+            echo "::group::round $i of $ROUNDS"
+            ./base.test -test.run='^$' -test.bench=. -test.benchmem | tee -a base.txt
+            ./head.test -test.run='^$' -test.bench=. -test.benchmem | tee -a head.txt
+            echo "::endgroup::"
+          done
 
+      - name: Compare with benchstat
+        run: |
+          go install golang.org/x/perf/cmd/benchstat@latest
+          {
+            echo '### Benchmarks: base vs. head, same runner'
+            echo
+            echo "Base \`${{ github.event.pull_request.base.sha }}\`, head \`${{ github.event.pull_request.head.sha }}\`, $ROUNDS interleaved rounds each."
+            echo
+            echo '```'
+            benchstat base=base.txt head=head.txt
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

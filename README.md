@@ -9,8 +9,8 @@
 
 [`fifomu`](https://pkg.go.dev/github.com/neilotoole/fifomu) is a Go
 package that provides a [`Mutex`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex)
-whose [`Lock`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.Lock) method returns
-the lock to queued callers in FIFO call order. This is in contrast to
+whose [`Lock`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.Lock) method grants
+the lock to callers in the order in which they called it. This is in contrast to
 [`sync.Mutex`](https://pkg.go.dev/sync#Mutex), where a single goroutine can
 repeatedly lock and unlock and relock the mutex without handing off to other
 lock waiter goroutines (that is, until after a 1ms starvation threshold, at
@@ -22,19 +22,29 @@ API-compatible with it (and by extension implements [`sync.Locker`](https://pkg.
 It also provides a bonus context-aware [`LockContext`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.LockContext)
 method.
 
-> **FIFO caveat.** FIFO ordering applies to goroutines that have been queued
-> as waiters. Arrival order across goroutines simultaneously contending for
-> the internal `sync.Mutex` that protects the waiter queue is not guaranteed:
-> a goroutine that called `Lock` slightly later may enqueue slightly earlier.
-> The reordering window is bounded by the duration of the critical section
-> that adds a waiter to the queue. If you need strict arrival-order
-> semantics, you will need a different primitive (e.g., a ticket lock
-> keyed by an atomically-incremented arrival counter).
+> **FIFO guarantee.** `Lock` and `LockContext` begin by taking a ticket
+> from an atomic counter, and the mutex is granted strictly in ticket order.
+> A caller's place in line is fixed by that single atomic increment, which
+> never blocks: once a goroutine holds a ticket, no goroutine that takes a
+> later ticket acquires the mutex first, however the scheduler treats either
+> of them afterwards. Two goroutines that call `Lock` at almost the same
+> instant are ordered by which of them increments the counter first.
 
-> **`TryLock` deviation from `sync.Mutex`.** `fifomu.Mutex.TryLock` reports
-> failure whenever the waiter queue is non-empty, even if the mutex is
-> momentarily unheld. This is deliberate: a successful `TryLock` that jumped
-> ahead of queued waiters would violate FIFO ordering.
+> **`TryLock` deviation from `sync.Mutex`.** `fifomu.Mutex.TryLock` succeeds
+> only if the mutex is unlocked and no other caller holds a ticket for it.
+> This is deliberate: a `TryLock` that took the lock ahead of a caller that
+> already had its place in line would violate FIFO ordering.
+
+> **`Unlock` deviation from `sync.Mutex`.** Unlocking an unlocked
+> `fifomu.Mutex` is an ordinary panic, with the same message `sync.Mutex`
+> reports. In `sync.Mutex` it is a fatal error that cannot be recovered.
+
+> **Misuse.** These guarantees are for callers that pair every `Unlock`
+> with a `Lock`. As with `sync.Mutex`, an `Unlock` with no matching `Lock`
+> releases a mutex that someone else holds, so mutual exclusion and
+> ordering are lost for the callers involved. `fifomu` does guarantee that
+> the damage is contained: no caller is left blocked forever, and the mutex
+> ends up unlocked and usable.
 
 Note: unless you need the FIFO behavior, you should prefer `sync.Mutex`.
 For typical workloads, its "greedy-relock" behavior requires less goroutine
@@ -44,8 +54,9 @@ section below.
 
 ## When to use
 
-`fifomu.Mutex` is useful when arrival-order fairness among contending
-goroutines is a correctness property, not just a performance one. Concrete
+`fifomu.Mutex` is useful when the order in which contending goroutines
+acquire the lock matters, and `sync.Mutex`'s willingness to let a running
+goroutine re-take the lock ahead of sleeping waiters is a problem. Concrete
 examples:
 
 - **Streaming fan-out.** A single producer writes bytes to a shared buffer;
@@ -57,7 +68,7 @@ examples:
   block on the same lock and each performs a few milliseconds of work,
   `sync.Mutex` may hand the lock back to the same goroutine multiple times
   before some waiters ever run. `fifomu.Mutex` distributes more evenly.
-- **Test/debug scaffolding** where deterministic acquire order simplifies
+- **Test/debug scaffolding** where acquiring in call order simplifies
   reasoning about which goroutine sees what state.
 
 If your code doesn't care who acquires the lock next — which is the common
@@ -112,7 +123,7 @@ func foo(ctx context.Context) error {
 Two caveats for `LockContext`:
 
 - If `ctx` is already done when `LockContext` is called and the lock is
-  available with no queued waiters, `LockContext` may still succeed without
+  available with no callers waiting, `LockContext` may still succeed without
   blocking.
 - If the mutex becomes available concurrently with `ctx` cancellation,
   `LockContext` may acquire the mutex and return `nil` even though `ctx`
@@ -124,29 +135,50 @@ In both cases, callers that require ctx-strict behavior should re-check
 
 ## How it works
 
-Internally, `fifomu.Mutex` is a `sync.Mutex` plus a FIFO queue of waiters:
+Internally, `fifomu.Mutex` is a [ticket lock](https://en.wikipedia.org/wiki/Ticket_lock):
+two atomic counters, `next` (the next ticket to issue) and `serving` (the
+ticket that owns the mutex), plus a `sync.Mutex` guarding a ticket-sorted
+list of waiters.
 
-- **Uncontended acquires** take the inner mutex briefly, flip a `locked`
-  bool, and return. See `BenchmarkLockContext_FastPath` / `BenchmarkMutexUncontended/fifomu` for current cost; allocation-free.
-- **When the mutex is held**, a caller appends itself to the waiter queue
-  — a pooled doubly-linked list of buffered(1) channels — and blocks on
-  its own channel.
-- **Unlock** walks the queue head, flips `locked`, and delivers a
-  non-blocking send on the chosen waiter's channel. No spinning.
+- **`Lock`** takes a ticket by incrementing `next`. If that ticket is
+  already being served, the caller owns the mutex: an uncontended acquire
+  is two atomic operations, never touches the inner mutex, and does not
+  allocate.
+- **When the mutex is held**, the caller takes the inner mutex, queues a
+  buffered(1) channel under its ticket, and blocks on that channel. The
+  list is kept sorted by ticket, so a goroutine that loses the race for the
+  inner mutex is still served in ticket order.
+- **`Unlock`** increments `serving`. If no later ticket has been issued it
+  is done. Otherwise it takes the inner mutex and, if the holder of the
+  ticket now being served has queued, delivers a non-blocking send on its
+  channel. If that holder hasn't queued yet, it finds its ticket being
+  served when it gets there. No spinning.
 - **`LockContext`** adds a `<-ctx.Done()` arm to the block. If `ctx`
-  fires before the signal, a cancel handler re-acquires the inner mutex,
-  dequeues the waiter, and returns `context.Cause(ctx)`.
+  fires before the signal, the caller re-acquires the inner mutex and
+  abandons its ticket, returning `context.Cause(ctx)`. An abandoned ticket
+  can't just be forgotten, because `Unlock` has to tell it apart from a
+  ticket whose holder hasn't queued yet. So it becomes a tombstone that
+  is skipped when its turn comes. Adjacent tombstones merge into ranges,
+  and tombstones for the newest tickets are removed by rolling `next`
+  back, so repeated timeouts against a long-held mutex don't accumulate
+  state.
+- **`TryLock`** is a single compare-and-swap that issues itself the ticket
+  being served, which only succeeds if no ticket is outstanding.
 - **Every happy path and every cancel path** returns the waiter channel
   to a `sync.Pool` with its buffer empty, so `Lock` and `LockContext` are
   allocation-free in steady state.
+
+Strict ordering has a cost that is inherent to the design: an unlocked
+mutex is reserved for the next ticket holder even if that goroutine isn't
+currently running, and everyone behind it waits.
 
 Buffered(1) channels (rather than unbuffered) are load-bearing: the
 `Unlock` side sends non-blockingly while still holding the inner mutex,
 so a racing cancellation on the `LockContext` side cannot strand the
 sender. Violating that invariant (enqueuing a non-empty channel)
 triggers a panic rather than silently reintroducing a deadlock; this is
-enforced in `waiter.signal` (called from `notifyWaiters`) and tested by
-`TestNotifyWaiters_PanicsOnViolatedInvariant`.
+enforced in `waiter.signal` (called from `handoff`) and tested by
+`TestHandoff_PanicsOnViolatedInvariant`.
 
 
 ## Testing and correctness
@@ -165,9 +197,33 @@ The test binary exercises:
 - A regression test for the `LockContext`/`Unlock` cancellation deadlock
   that the initial implementation shipped with. Under the old unbuffered-
   channel design, the test fails within seconds.
+- Ticket-order tests: a goroutine left blocked on the inner mutex is not
+  overtaken by a later caller, goroutines that reach the waiter list out
+  of order are still served in ticket order, and a stress test asserts
+  that every acquisition is by the ticket being served.
+- Cancellation tests: abandoned tickets are skipped, the newest abandoned
+  ticket is rolled back, and overlapping timeouts leave a bounded number
+  of tombstones.
 - Invariant tests: queue ordering under mixed `Lock`/`LockContext`,
   middle-of-queue cancel, cross-goroutine `Unlock`, idempotent
-  `list.remove`, and the exact panic messages matching `sync.Mutex`.
+  `list.remove`, and the double-unlock panic message matching
+  `sync.Mutex`.
+- Branch tests: each rarely-taken path (an in-flight ticket holder being
+  handed the mutex, a waiter abandoning the ticket being served, a signal
+  beating a cancellation, the ticket counter wrapping around) is forced
+  deterministically.
+- An exhaustive scenario test: every sequence of `Lock`, `LockContext`,
+  `TryLock`, `Unlock` and cancellation up to a fixed length, checked step
+  by step against a trivially correct reference model.
+- A model checker: the locking protocol restated as a state machine, with
+  every interleaving of a few threads explored and mutual exclusion, FIFO
+  order, freedom from deadlock and the documented invariants checked in
+  every state. It checks the protocol rather than the compiled code, and
+  it is itself tested: protocol bugs seeded on purpose must be caught.
+- Misuse tests: an `Unlock` with no matching `Lock`, racing the calls
+  around it, must not leave any caller blocked or the mutex unusable.
+  The model checker explores the same thing exhaustively, and a nil
+  `Context` is rejected before it can take a place in line.
 - A chaos test: 20 goroutines for 2 seconds, each picking a random
   operation, with an atomic counter asserting at most one holder at a
   time.
@@ -177,11 +233,23 @@ The test binary exercises:
 
 No data races or goroutine leaks are tolerated.
 
+The scenario test and the model checker run at small bounds by default and
+at larger ones in CI. To go deeper locally:
+
+```shell
+FIFOMU_SCENARIO_LEN=8 go test -run '^TestScenarios_' .
+FIFOMU_MODEL=2x4,3x2,4x1 FIFOMU_MODEL_MISUSE=2x4,3x2,4x1 go test -run '^TestModel_' .
+```
+
+A separate, on-demand [soak workflow](.github/workflows/soak.yml) re-runs
+the suite for a set time across architectures, `GOMAXPROCS` values, and
+with and without the race detector.
+
 
 ## Benchmarks
 
 The benchmark results below were obtained on a 2021 MacBook Pro (M1 Max)
-using Go 1.26.
+using Go 1.27.
 
 The benchmarks compare three mutex implementations:
 
@@ -191,13 +259,16 @@ The benchmarks compare three mutex implementations:
  [`semaphore.Weighted`](https://pkg.go.dev/golang.org/x/sync/semaphore); it
  exists only in the test code, as a comparison baseline.
 
-Across contended benchmarks, `fifomu.Mutex.Lock` runs roughly 1.3×–3.5×
-slower than `sync.Mutex` (`BenchmarkMutex` and `BenchmarkMutexSlack` near
-the low end, `BenchmarkMutexNoSpin` at the high end). The outlier is
-`BenchmarkMutexSpin`, where `fifomu` is ~6.5× slower. `fifomu` is always
-faster than the baseline `semaphoreMu` implementation, and unlike that
-baseline, calls to `fifomu`'s `Lock` and `LockContext` methods do not
-allocate.
+Uncontended, `fifomu.Mutex` costs about the same as `sync.Mutex`: its
+fast path is two atomic operations.
+
+Across contended benchmarks, `fifomu.Mutex.Lock` runs roughly 1.5×–2.6×
+slower than `sync.Mutex` (`BenchmarkMutex` at the low end,
+`BenchmarkMutexNoSpin` at the high end). The outlier is
+`BenchmarkMutexSpin`, where `fifomu` is ~10× slower. `fifomu` is faster
+than the baseline `semaphoreMu` implementation in every benchmark, and
+unlike that baseline, calls to `fifomu`'s `Lock` and `LockContext` methods
+do not allocate.
 
 `LockContext` adds a small per-call overhead over `Lock` on contended
 paths — the table below shows roughly 15–20% for `BenchmarkLockContext_Contended`
@@ -228,7 +299,7 @@ Benchmark name shapes (inherited from the stdlib `sync/mutex_test.go`):
   unprofitable. In practice the stdlib still spins some (hence its
   higher allocation-per-op), and `fifomu`'s forced scheduler handoff
   on every acquire still costs more, so the gap here is larger than
-  the basic `BenchmarkMutex` (roughly 3.5× vs 1.3×).
+  the basic `BenchmarkMutex` (roughly 2.6× vs 1.5×).
 - `Spin` — models a workload where spinning *would* be profitable;
   `fifomu` can't spin, which is the fundamental reason it loses worst
   on this one.
@@ -241,30 +312,30 @@ goos: darwin
 goarch: arm64
 pkg: github.com/neilotoole/fifomu
 cpu: Apple M1 Max
-BenchmarkLockContext_FastPath-10           349898984          3.457 ns/op    0 B/op   0 allocs/op
-BenchmarkLockContext_Contended-10            6611028        191.8   ns/op    0 B/op   0 allocs/op
-BenchmarkLockContext_Cancel-10              13624764         88.34  ns/op    0 B/op   0 allocs/op
-BenchmarkMutexUncontended/stdlib-10        696781160          1.793 ns/op    0 B/op   0 allocs/op
-BenchmarkMutexUncontended/fifomu-10        335351145          3.603 ns/op    0 B/op   0 allocs/op
-BenchmarkMutexUncontended/semaphoreMu-10   305443803          3.504 ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/stdlib-10                     9246698        123.9   ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/fifomu-10                     7253898        163.1   ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/semaphoreMu-10                5127471        230.3   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexSlack/stdlib-10               10402440        113.9   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSlack/fifomu-10                7020883        175.0   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSlack/semaphoreMu-10           4795321        263.8   ns/op  176 B/op   3 allocs/op
-BenchmarkMutexWork/stdlib-10                 9208046        132.7   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWork/fifomu-10                 5993347        200.8   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWork/semaphoreMu-10            4378946        277.6   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexWorkSlack/stdlib-10           10696843        111.9   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWorkSlack/fifomu-10            5888556        201.2   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWorkSlack/semaphoreMu-10       4249790        298.9   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexNoSpin/stdlib-10               6842372        183.0   ns/op   12 B/op   0 allocs/op
-BenchmarkMutexNoSpin/fifomu-10               2220228        647.6   ns/op   12 B/op   0 allocs/op
-BenchmarkMutexNoSpin/semaphoreMu-10          1978136        570.3   ns/op   56 B/op   1 allocs/op
-BenchmarkMutexSpin/stdlib-10                 3180140        369.1   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSpin/fifomu-10                  493010       2404     ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSpin/semaphoreMu-10             478358       2511     ns/op  175 B/op   2 allocs/op
+BenchmarkLockContext_FastPath-10           867633475          1.444 ns/op    0 B/op   0 allocs/op
+BenchmarkLockContext_Contended-10            5860754        210.7   ns/op    0 B/op   0 allocs/op
+BenchmarkLockContext_Cancel-10              12342715         95.46  ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/stdlib-10        715136355          1.720 ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/fifomu-10       1000000000          1.135 ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/semaphoreMu-10   343491252          3.753 ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/stdlib-10                     9430585        122.5   ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/fifomu-10                     5693994        178.5   ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/semaphoreMu-10                5071872        230.9   ns/op  176 B/op   3 allocs/op
+BenchmarkMutexSlack/stdlib-10               10174064        111.7   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSlack/fifomu-10                6370922        188.6   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSlack/semaphoreMu-10           4715474        249.6   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexWork/stdlib-10                 9017374        132.4   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWork/fifomu-10                 5774289        210.3   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWork/semaphoreMu-10            4640755        267.4   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexWorkSlack/stdlib-10           10735240        120.3   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWorkSlack/fifomu-10            5727982        211.7   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWorkSlack/semaphoreMu-10       4466762        269.4   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexNoSpin/stdlib-10               8453712        150.7   ns/op   12 B/op   0 allocs/op
+BenchmarkMutexNoSpin/fifomu-10               2796036        392.2   ns/op   12 B/op   0 allocs/op
+BenchmarkMutexNoSpin/semaphoreMu-10          2544576        474.0   ns/op   55 B/op   1 allocs/op
+BenchmarkMutexSpin/stdlib-10                 5276641        232.9   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSpin/fifomu-10                  495802       2431     ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSpin/semaphoreMu-10             473323       2580     ns/op  175 B/op   2 allocs/op
 ```
 
 ### Continuous benchmarks
@@ -279,12 +350,11 @@ branch.
 - These numbers come from shared GitHub-hosted runners (`ubuntu-latest`),
   so they are noisy and not comparable to the M1 figures above. Read them
   as a trend, not as absolute performance.
-- A benchmark that becomes 2× slower or worse than the previous result
-  triggers a regression comment on the commit. Alerts never fail the build.
-- Pull requests from branches in this repo are benchmarked against the
-  latest `master` result. The comparison appears in the workflow run
-  summary, and on a regression, as a PR comment. PR results are not
-  added to the history.
+- Pull requests are not compared against that history, because runners
+  differ too much from run to run. Instead, CI benchmarks the PR's base
+  and head commits alternately on one runner and reports the difference
+  with [`benchstat`](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat)
+  in the workflow run summary. PR results are not added to the history.
 
 ## Requirements
 
@@ -293,7 +363,7 @@ branch.
   (Go 1.25+).
 - **Non-stdlib dependency (tests only):** [`golang.org/x/sync`](https://pkg.go.dev/golang.org/x/sync),
   used only by the benchmark baselines — `fifomu.Mutex` itself
-  depends only on the standard library (`context` and `sync`).
+  depends only on the standard library (`context`, `sync` and `sync/atomic`).
 - **Test-only dependency:** [`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak).
 
 

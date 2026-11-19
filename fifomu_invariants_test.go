@@ -168,10 +168,10 @@ func TestMutex_UnlockFromDifferentGoroutine(t *testing.T) {
 	}
 }
 
-// TestMutex_RecoverFromDoubleUnlockPanic verifies the central claim
-// of the locked-bool refactor: unlike sync.Mutex, recovering from a
-// double-unlock panic leaves the Mutex in a normally-unlocked state
-// so subsequent Lock/Unlock cycles succeed.
+// TestMutex_RecoverFromDoubleUnlockPanic verifies that the
+// double-unlock panic is recoverable (in sync.Mutex it is a fatal
+// error) and leaves the Mutex in a normally-unlocked state, so
+// subsequent Lock/Unlock cycles succeed.
 //
 // This is load-bearing for the Unlock doc comment's recover-safety
 // guarantee.
@@ -208,8 +208,10 @@ func TestMutex_RecoverFromDoubleUnlockPanic(t *testing.T) {
 // TestMutex_ConcurrentDoubleUnlock documents the outcome when two
 // goroutines race to Unlock a once-locked Mutex (caller misuse).
 // Exactly one must succeed and exactly one must panic with the
-// stdlib-compatible message. The inner mutex serializes them, so
-// the outcome is deterministic even though the order isn't.
+// stdlib-compatible message. Both race to advance the same counter
+// with a compare-and-swap; the loser retries, finds the mutex
+// unlocked, and panics. So the outcome is deterministic even though
+// the order isn't.
 func TestMutex_ConcurrentDoubleUnlock(t *testing.T) {
 	const iters = 50
 	for range iters {
@@ -244,9 +246,9 @@ func TestMutex_ConcurrentDoubleUnlock(t *testing.T) {
 }
 
 // TestMutex_UnlockPanicMessage locks in the exact panic message
-// used for double-unlock, matching sync.Mutex's message. A silent
-// change would regress drop-in compatibility with sync.Mutex
-// callers that recover and inspect the message.
+// used for double-unlock, matching the message of sync.Mutex's
+// (unrecoverable) fatal error, so that the two read the same in
+// logs and crash reports.
 func TestMutex_UnlockPanicMessage(t *testing.T) {
 	defer func() {
 		r := recover()

@@ -15,8 +15,8 @@ func TestList_RemoveClearsFields(t *testing.T) {
 	var l list
 	w1 := waiter(make(chan struct{}, 1))
 	w2 := waiter(make(chan struct{}, 1))
-	e1 := l.pushBackElem(w1)
-	e2 := l.pushBackElem(w2)
+	e1 := l.insert(1, w1)
+	e2 := l.insert(2, w2)
 
 	l.remove(e1)
 
@@ -31,6 +31,9 @@ func TestList_RemoveClearsFields(t *testing.T) {
 	}
 	if e1.value != nil {
 		t.Error("e1.value not cleared after remove")
+	}
+	if e1.lo != 0 || e1.hi != 0 {
+		t.Error("e1 ticket range not cleared after remove")
 	}
 
 	// The rest of the list must be intact.
@@ -58,9 +61,9 @@ func TestList_RemoveIsIdempotent(t *testing.T) {
 	w2 := waiter(make(chan struct{}, 1))
 	w3 := waiter(make(chan struct{}, 1))
 
-	e1 := l.pushBackElem(w1)
-	e2 := l.pushBackElem(w2)
-	e3 := l.pushBackElem(w3)
+	e1 := l.insert(1, w1)
+	e2 := l.insert(2, w2)
+	e3 := l.insert(3, w3)
 
 	if got, want := l.len, 3; got != want {
 		t.Fatalf("len after 3 pushes = %d, want %d", got, want)
@@ -115,7 +118,7 @@ func TestList_RemoveIsIdempotent(t *testing.T) {
 func TestList_RemoveDoesNotDoublePool(t *testing.T) {
 	var l list
 	w := waiter(make(chan struct{}, 1))
-	e := l.pushBackElem(w)
+	e := l.insert(1, w)
 
 	// First remove: element is legitimately put back into the pool.
 	l.remove(e)
@@ -145,32 +148,31 @@ func TestList_RemoveDoesNotDoublePool(t *testing.T) {
 	}
 }
 
-// TestNotifyWaiters_PanicsOnViolatedInvariant verifies the
-// select-with-default safety net in notifyWaiters: if a waiter
+// TestHandoff_PanicsOnViolatedInvariant verifies the
+// select-with-default safety net in waiter.signal: if a waiter
 // arrives with a non-empty buffer (meaning the pool invariant was
-// violated), notifyWaiters panics with a diagnostic message
-// instead of silently reintroducing the pre-fix deadlock.
+// violated), handoff panics with a diagnostic message instead of
+// silently reintroducing the pre-fix deadlock.
 //
 // We simulate the invariant violation by manually queuing a waiter
-// whose buffer is already full, then triggering Unlock →
-// notifyWaiters.
-func TestNotifyWaiters_PanicsOnViolatedInvariant(t *testing.T) {
+// whose buffer is already full, then triggering Unlock → handoff.
+func TestHandoff_PanicsOnViolatedInvariant(t *testing.T) {
 	var mu Mutex
-	mu.Lock() // locked = true, no waiters
+	mu.Lock() // holds ticket 0
 
-	// Manually push a waiter with a pre-filled buffer. In normal
-	// operation the pool invariant guarantees this never happens;
-	// we're violating it deliberately.
+	// Manually issue ticket 1 and queue a waiter for it with a
+	// pre-filled buffer. In normal operation the pool invariant
+	// guarantees this never happens; we're violating it deliberately.
 	mu.mu.Lock()
 	w := waiter(make(chan struct{}, 1))
 	w <- struct{}{} // buffer now full
-	mu.waiters.pushBackElem(w)
+	mu.waiters.insert(mu.next.Add(1)-1, w)
 	mu.mu.Unlock()
 
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("expected panic from notifyWaiters when invariant is violated")
+			t.Fatal("expected panic from handoff when invariant is violated")
 		}
 		msg, ok := r.(string)
 		if !ok {
@@ -181,6 +183,6 @@ func TestNotifyWaiters_PanicsOnViolatedInvariant(t *testing.T) {
 		}
 	}()
 
-	// Trigger notifyWaiters by unlocking.
+	// Trigger handoff by unlocking.
 	mu.Unlock()
 }

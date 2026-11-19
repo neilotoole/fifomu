@@ -25,7 +25,7 @@ import (
 //
 // This is a probabilistic test — it cannot prove correctness, but
 // under -race it catches classes of bugs (missing synchronization,
-// double-signal, wrong branch in notifyWaiters) that targeted
+// double-signal, wrong branch in handoff) that targeted
 // tests might miss because they exercise a specific code path in
 // isolation.
 //
