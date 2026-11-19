@@ -31,13 +31,20 @@ method.
 > instant are ordered by which of them increments the counter first.
 
 > **`TryLock` deviation from `sync.Mutex`.** `fifomu.Mutex.TryLock` succeeds
-> only if the mutex is unlocked and no other caller is in the process of
-> acquiring it. This is deliberate: a `TryLock` that took the lock ahead of
-> a goroutine that had already called `Lock` would violate FIFO ordering.
+> only if the mutex is unlocked and no other caller holds a ticket for it.
+> This is deliberate: a `TryLock` that took the lock ahead of a caller that
+> already had its place in line would violate FIFO ordering.
 
 > **`Unlock` deviation from `sync.Mutex`.** Unlocking an unlocked
 > `fifomu.Mutex` is an ordinary panic, with the same message `sync.Mutex`
 > reports. In `sync.Mutex` it is a fatal error that cannot be recovered.
+
+> **Misuse.** These guarantees are for callers that pair every `Unlock`
+> with a `Lock`. As with `sync.Mutex`, an `Unlock` with no matching `Lock`
+> releases a mutex that someone else holds, so mutual exclusion and
+> ordering are lost for the callers involved. `fifomu` does guarantee that
+> the damage is contained: no caller is left blocked forever, and the mutex
+> ends up unlocked and usable.
 
 Note: unless you need the FIFO behavior, you should prefer `sync.Mutex`.
 For typical workloads, its "greedy-relock" behavior requires less goroutine
@@ -151,9 +158,10 @@ list of waiters.
   abandons its ticket, returning `context.Cause(ctx)`. An abandoned ticket
   can't just be forgotten, because `Unlock` has to tell it apart from a
   ticket whose holder hasn't queued yet. So it becomes a tombstone that
-  `Unlock` skips. Adjacent tombstones merge into ranges, and tombstones for
-  the newest tickets are removed by rolling `next` back, so repeated
-  timeouts against a long-held mutex don't accumulate state.
+  is skipped when its turn comes. Adjacent tombstones merge into ranges,
+  and tombstones for the newest tickets are removed by rolling `next`
+  back, so repeated timeouts against a long-held mutex don't accumulate
+  state.
 - **`TryLock`** is a single compare-and-swap that issues itself the ticket
   being served, which only succeeds if no ticket is outstanding.
 - **Every happy path and every cancel path** returns the waiter channel
@@ -212,6 +220,10 @@ The test binary exercises:
   order, freedom from deadlock and the documented invariants checked in
   every state. It checks the protocol rather than the compiled code, and
   it is itself tested: protocol bugs seeded on purpose must be caught.
+- Misuse tests: an `Unlock` with no matching `Lock`, racing the calls
+  around it, must not leave any caller blocked or the mutex unusable.
+  The model checker explores the same thing exhaustively, and a nil
+  `Context` is rejected before it can take a place in line.
 - A chaos test: 20 goroutines for 2 seconds, each picking a random
   operation, with an atomic counter asserting at most one holder at a
   time.
@@ -226,7 +238,7 @@ at larger ones in CI. To go deeper locally:
 
 ```shell
 FIFOMU_SCENARIO_LEN=8 go test -run '^TestScenarios_' .
-FIFOMU_MODEL=2x4,3x2,4x1 go test -run '^TestModel_' .
+FIFOMU_MODEL=2x4,3x2,4x1 FIFOMU_MODEL_MISUSE=2x4,3x2,4x1 go test -run '^TestModel_' .
 ```
 
 A separate, on-demand [soak workflow](.github/workflows/soak.yml) re-runs

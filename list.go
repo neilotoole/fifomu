@@ -14,8 +14,10 @@ var elementPool = sync.Pool{New: func() any { return new(element) }}
 // waiter's ticket) or a tombstone (value == nil) covering the
 // inclusive range [lo, hi] of abandoned tickets. Element ranges never
 // overlap, and two tombstones are never adjacent in ticket space:
-// abandon merges them. That bounds the list length by roughly twice
-// the number of live waiters, however many tickets are abandoned.
+// abandon merges them. So between any two tombstones there is a ticket
+// whose holder has not given up, though it may not have reached the
+// list yet. That bounds the list length by roughly twice the number of
+// such callers, however many tickets are abandoned.
 type list struct {
 	root element
 	len  int
@@ -58,10 +60,8 @@ func (l *list) back() *element {
 func (l *list) insert(ticket uint64, v waiter) *element {
 	l.lazyInit()
 
-	// The comparison is on the signed difference, so that ordering
-	// survives the ticket counter wrapping around.
 	at := l.root.prev
-	for at != &l.root && int64(at.lo-ticket) > 0 { //nolint:gosec // wraparound-safe ordering
+	for at != &l.root && before(ticket, at.lo) {
 		at = at.prev
 	}
 

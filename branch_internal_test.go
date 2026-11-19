@@ -225,7 +225,8 @@ func TestHandoff_SkipsTombstoneRange(t *testing.T) {
 // TestLockContext_AbandonTicketBeingServed covers a waiter that gives
 // up in the window after an unlocker has advanced serving onto its
 // ticket, but before that unlocker has taken the inner mutex to signal
-// it. The mutex momentarily belongs to a ticket nobody wants.
+// it. The mutex momentarily belongs to a ticket nobody wants, and the
+// waiter that is giving up passes it on itself.
 func TestLockContext_AbandonTicketBeingServed(t *testing.T) {
 	t.Run("newest ticket: mutex ends up unlocked", func(t *testing.T) {
 		var m Mutex
@@ -264,10 +265,16 @@ func TestLockContext_AbandonTicketBeingServed(t *testing.T) {
 			t.Fatal("setup: CAS failed")
 		}
 		requireAbandoned(t, "waiter", w)
-		requireStillWaiting(t, "ticket 2", later)
 
-		m.unlockSlow() // skips the tombstone for ticket 1
+		// Giving up skipped the tombstone for ticket 1 there and then,
+		// rather than leaving ticket 2 to wait for the unlocker.
 		requireAcquires(t, "ticket 2", later)
+
+		// The second half of Unlock finds nothing left to do.
+		m.unlockSlow()
+		if m.TryLock() {
+			t.Fatal("mutex not held by ticket 2 after the late handoff")
+		}
 		m.Unlock()
 		requireUnlocked(t, &m)
 	})

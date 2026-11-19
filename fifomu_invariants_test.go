@@ -208,8 +208,10 @@ func TestMutex_RecoverFromDoubleUnlockPanic(t *testing.T) {
 // TestMutex_ConcurrentDoubleUnlock documents the outcome when two
 // goroutines race to Unlock a once-locked Mutex (caller misuse).
 // Exactly one must succeed and exactly one must panic with the
-// stdlib-compatible message. The inner mutex serializes them, so
-// the outcome is deterministic even though the order isn't.
+// stdlib-compatible message. Both race to advance the same counter
+// with a compare-and-swap; the loser retries, finds the mutex
+// unlocked, and panics. So the outcome is deterministic even though
+// the order isn't.
 func TestMutex_ConcurrentDoubleUnlock(t *testing.T) {
 	const iters = 50
 	for range iters {
