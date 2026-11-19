@@ -9,8 +9,8 @@
 
 [`fifomu`](https://pkg.go.dev/github.com/neilotoole/fifomu) is a Go
 package that provides a [`Mutex`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex)
-whose [`Lock`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.Lock) method returns
-the lock to queued callers in FIFO call order. This is in contrast to
+whose [`Lock`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.Lock) method grants
+the lock to callers in the order in which they called it. This is in contrast to
 [`sync.Mutex`](https://pkg.go.dev/sync#Mutex), where a single goroutine can
 repeatedly lock and unlock and relock the mutex without handing off to other
 lock waiter goroutines (that is, until after a 1ms starvation threshold, at
@@ -22,19 +22,22 @@ API-compatible with it (and by extension implements [`sync.Locker`](https://pkg.
 It also provides a bonus context-aware [`LockContext`](https://pkg.go.dev/github.com/neilotoole/fifomu#Mutex.LockContext)
 method.
 
-> **FIFO caveat.** FIFO ordering applies to goroutines that have been queued
-> as waiters. Arrival order across goroutines simultaneously contending for
-> the internal `sync.Mutex` that protects the waiter queue is not guaranteed:
-> a goroutine that called `Lock` slightly later may enqueue slightly earlier.
-> The reordering window is bounded by the duration of the critical section
-> that adds a waiter to the queue. If you need strict arrival-order
-> semantics, you will need a different primitive (e.g., a ticket lock
-> keyed by an atomically-incremented arrival counter).
+> **FIFO guarantee.** `Lock` and `LockContext` begin by taking a ticket
+> from an atomic counter, and the mutex is granted strictly in ticket order.
+> A caller's place in line is fixed by that single atomic increment, which
+> never blocks: once a goroutine holds a ticket, no goroutine that takes a
+> later ticket acquires the mutex first, however the scheduler treats either
+> of them afterwards. Two goroutines that call `Lock` at almost the same
+> instant are ordered by which of them increments the counter first.
 
-> **`TryLock` deviation from `sync.Mutex`.** `fifomu.Mutex.TryLock` reports
-> failure whenever the waiter queue is non-empty, even if the mutex is
-> momentarily unheld. This is deliberate: a successful `TryLock` that jumped
-> ahead of queued waiters would violate FIFO ordering.
+> **`TryLock` deviation from `sync.Mutex`.** `fifomu.Mutex.TryLock` succeeds
+> only if the mutex is unlocked and no other caller is in the process of
+> acquiring it. This is deliberate: a `TryLock` that took the lock ahead of
+> a goroutine that had already called `Lock` would violate FIFO ordering.
+
+> **`Unlock` deviation from `sync.Mutex`.** Unlocking an unlocked
+> `fifomu.Mutex` is an ordinary panic, with the same message `sync.Mutex`
+> reports. In `sync.Mutex` it is a fatal error that cannot be recovered.
 
 Note: unless you need the FIFO behavior, you should prefer `sync.Mutex`.
 For typical workloads, its "greedy-relock" behavior requires less goroutine
@@ -44,8 +47,9 @@ section below.
 
 ## When to use
 
-`fifomu.Mutex` is useful when arrival-order fairness among contending
-goroutines is a correctness property, not just a performance one. Concrete
+`fifomu.Mutex` is useful when the order in which contending goroutines
+acquire the lock matters, and `sync.Mutex`'s willingness to let a running
+goroutine re-take the lock ahead of sleeping waiters is a problem. Concrete
 examples:
 
 - **Streaming fan-out.** A single producer writes bytes to a shared buffer;
@@ -57,7 +61,7 @@ examples:
   block on the same lock and each performs a few milliseconds of work,
   `sync.Mutex` may hand the lock back to the same goroutine multiple times
   before some waiters ever run. `fifomu.Mutex` distributes more evenly.
-- **Test/debug scaffolding** where deterministic acquire order simplifies
+- **Test/debug scaffolding** where acquiring in call order simplifies
   reasoning about which goroutine sees what state.
 
 If your code doesn't care who acquires the lock next — which is the common
@@ -124,29 +128,49 @@ In both cases, callers that require ctx-strict behavior should re-check
 
 ## How it works
 
-Internally, `fifomu.Mutex` is a `sync.Mutex` plus a FIFO queue of waiters:
+Internally, `fifomu.Mutex` is a [ticket lock](https://en.wikipedia.org/wiki/Ticket_lock):
+two atomic counters, `next` (the next ticket to issue) and `serving` (the
+ticket that owns the mutex), plus a `sync.Mutex` guarding a ticket-sorted
+list of waiters.
 
-- **Uncontended acquires** take the inner mutex briefly, flip a `locked`
-  bool, and return. See `BenchmarkLockContext_FastPath` / `BenchmarkMutexUncontended/fifomu` for current cost; allocation-free.
-- **When the mutex is held**, a caller appends itself to the waiter queue
-  — a pooled doubly-linked list of buffered(1) channels — and blocks on
-  its own channel.
-- **Unlock** walks the queue head, flips `locked`, and delivers a
-  non-blocking send on the chosen waiter's channel. No spinning.
+- **`Lock`** takes a ticket by incrementing `next`. If that ticket is
+  already being served, the caller owns the mutex: an uncontended acquire
+  is two atomic operations, never touches the inner mutex, and does not
+  allocate.
+- **When the mutex is held**, the caller takes the inner mutex, queues a
+  buffered(1) channel under its ticket, and blocks on that channel. The
+  list is kept sorted by ticket, so a goroutine that loses the race for the
+  inner mutex is still served in ticket order.
+- **`Unlock`** increments `serving`. If no later ticket has been issued it
+  is done. Otherwise it takes the inner mutex and, if the holder of the
+  ticket now being served has queued, delivers a non-blocking send on its
+  channel. If that holder hasn't queued yet, it finds its ticket being
+  served when it gets there. No spinning.
 - **`LockContext`** adds a `<-ctx.Done()` arm to the block. If `ctx`
-  fires before the signal, a cancel handler re-acquires the inner mutex,
-  dequeues the waiter, and returns `context.Cause(ctx)`.
+  fires before the signal, the caller re-acquires the inner mutex and
+  abandons its ticket, returning `context.Cause(ctx)`. An abandoned ticket
+  can't just be forgotten, because `Unlock` has to tell it apart from a
+  ticket whose holder hasn't queued yet. So it becomes a tombstone that
+  `Unlock` skips. Adjacent tombstones merge into ranges, and tombstones for
+  the newest tickets are removed by rolling `next` back, so repeated
+  timeouts against a long-held mutex don't accumulate state.
+- **`TryLock`** is a single compare-and-swap that issues itself the ticket
+  being served, which only succeeds if no ticket is outstanding.
 - **Every happy path and every cancel path** returns the waiter channel
   to a `sync.Pool` with its buffer empty, so `Lock` and `LockContext` are
   allocation-free in steady state.
+
+Strict ordering has a cost that is inherent to the design: an unlocked
+mutex is reserved for the next ticket holder even if that goroutine isn't
+currently running, and everyone behind it waits.
 
 Buffered(1) channels (rather than unbuffered) are load-bearing: the
 `Unlock` side sends non-blockingly while still holding the inner mutex,
 so a racing cancellation on the `LockContext` side cannot strand the
 sender. Violating that invariant (enqueuing a non-empty channel)
 triggers a panic rather than silently reintroducing a deadlock; this is
-enforced in `waiter.signal` (called from `notifyWaiters`) and tested by
-`TestNotifyWaiters_PanicsOnViolatedInvariant`.
+enforced in `waiter.signal` (called from `handoff`) and tested by
+`TestHandoff_PanicsOnViolatedInvariant`.
 
 
 ## Testing and correctness
@@ -165,9 +189,17 @@ The test binary exercises:
 - A regression test for the `LockContext`/`Unlock` cancellation deadlock
   that the initial implementation shipped with. Under the old unbuffered-
   channel design, the test fails within seconds.
+- Ticket-order tests: a goroutine left blocked on the inner mutex is not
+  overtaken by a later caller, goroutines that reach the waiter list out
+  of order are still served in ticket order, and a stress test asserts
+  that every acquisition is by the ticket being served.
+- Cancellation tests: abandoned tickets are skipped, the newest abandoned
+  ticket is rolled back, and overlapping timeouts leave a bounded number
+  of tombstones.
 - Invariant tests: queue ordering under mixed `Lock`/`LockContext`,
   middle-of-queue cancel, cross-goroutine `Unlock`, idempotent
-  `list.remove`, and the exact panic messages matching `sync.Mutex`.
+  `list.remove`, and the double-unlock panic message matching
+  `sync.Mutex`.
 - A chaos test: 20 goroutines for 2 seconds, each picking a random
   operation, with an atomic counter asserting at most one holder at a
   time.
@@ -293,7 +325,7 @@ branch.
   (Go 1.25+).
 - **Non-stdlib dependency (tests only):** [`golang.org/x/sync`](https://pkg.go.dev/golang.org/x/sync),
   used only by the benchmark baselines — `fifomu.Mutex` itself
-  depends only on the standard library (`context` and `sync`).
+  depends only on the standard library (`context`, `sync` and `sync/atomic`).
 - **Test-only dependency:** [`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak).
 
 

@@ -124,7 +124,7 @@ func TestLockContext_DeadlineExceeded(t *testing.T) {
 }
 
 // TestLockContext_CancelRaceRegression is a regression test for the
-// deadlock where notifyWaiters parked on an unbuffered send while the
+// deadlock where the unlocker parked on an unbuffered send while the
 // canceling LockContext goroutine blocked on the internal mu. With
 // buffered waiter channels, the send is always non-blocking, and this
 // test completes regardless of how the cancel/unlock race resolves.
@@ -368,8 +368,7 @@ func TestLockContext_FIFOAmongContextWaiters(t *testing.T) {
 }
 
 // TestTryLock_RefusesWhileWaiterQueued documents that TryLock fails
-// when the waiter queue is non-empty, even if the mutex is briefly
-// unheld (which preserves FIFO ordering).
+// while the mutex is held and another goroutine is queued for it.
 func TestTryLock_RefusesWhileWaiterQueued(t *testing.T) {
 	var mu fifomu.Mutex
 	mu.Lock()
