@@ -213,7 +213,7 @@ No data races or goroutine leaks are tolerated.
 ## Benchmarks
 
 The benchmark results below were obtained on a 2021 MacBook Pro (M1 Max)
-using Go 1.26.
+using Go 1.27.
 
 The benchmarks compare three mutex implementations:
 
@@ -223,13 +223,16 @@ The benchmarks compare three mutex implementations:
  [`semaphore.Weighted`](https://pkg.go.dev/golang.org/x/sync/semaphore); it
  exists only in the test code, as a comparison baseline.
 
-Across contended benchmarks, `fifomu.Mutex.Lock` runs roughly 1.3×–3.5×
-slower than `sync.Mutex` (`BenchmarkMutex` and `BenchmarkMutexSlack` near
-the low end, `BenchmarkMutexNoSpin` at the high end). The outlier is
-`BenchmarkMutexSpin`, where `fifomu` is ~6.5× slower. `fifomu` is always
-faster than the baseline `semaphoreMu` implementation, and unlike that
-baseline, calls to `fifomu`'s `Lock` and `LockContext` methods do not
-allocate.
+Uncontended, `fifomu.Mutex` costs about the same as `sync.Mutex`: its
+fast path is two atomic operations.
+
+Across contended benchmarks, `fifomu.Mutex.Lock` runs roughly 1.5×–2.6×
+slower than `sync.Mutex` (`BenchmarkMutex` at the low end,
+`BenchmarkMutexNoSpin` at the high end). The outlier is
+`BenchmarkMutexSpin`, where `fifomu` is ~10× slower. `fifomu` is faster
+than the baseline `semaphoreMu` implementation in every benchmark, and
+unlike that baseline, calls to `fifomu`'s `Lock` and `LockContext` methods
+do not allocate.
 
 `LockContext` adds a small per-call overhead over `Lock` on contended
 paths — the table below shows roughly 15–20% for `BenchmarkLockContext_Contended`
@@ -260,7 +263,7 @@ Benchmark name shapes (inherited from the stdlib `sync/mutex_test.go`):
   unprofitable. In practice the stdlib still spins some (hence its
   higher allocation-per-op), and `fifomu`'s forced scheduler handoff
   on every acquire still costs more, so the gap here is larger than
-  the basic `BenchmarkMutex` (roughly 3.5× vs 1.3×).
+  the basic `BenchmarkMutex` (roughly 2.6× vs 1.5×).
 - `Spin` — models a workload where spinning *would* be profitable;
   `fifomu` can't spin, which is the fundamental reason it loses worst
   on this one.
@@ -273,30 +276,30 @@ goos: darwin
 goarch: arm64
 pkg: github.com/neilotoole/fifomu
 cpu: Apple M1 Max
-BenchmarkLockContext_FastPath-10           349898984          3.457 ns/op    0 B/op   0 allocs/op
-BenchmarkLockContext_Contended-10            6611028        191.8   ns/op    0 B/op   0 allocs/op
-BenchmarkLockContext_Cancel-10              13624764         88.34  ns/op    0 B/op   0 allocs/op
-BenchmarkMutexUncontended/stdlib-10        696781160          1.793 ns/op    0 B/op   0 allocs/op
-BenchmarkMutexUncontended/fifomu-10        335351145          3.603 ns/op    0 B/op   0 allocs/op
-BenchmarkMutexUncontended/semaphoreMu-10   305443803          3.504 ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/stdlib-10                     9246698        123.9   ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/fifomu-10                     7253898        163.1   ns/op    0 B/op   0 allocs/op
-BenchmarkMutex/semaphoreMu-10                5127471        230.3   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexSlack/stdlib-10               10402440        113.9   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSlack/fifomu-10                7020883        175.0   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSlack/semaphoreMu-10           4795321        263.8   ns/op  176 B/op   3 allocs/op
-BenchmarkMutexWork/stdlib-10                 9208046        132.7   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWork/fifomu-10                 5993347        200.8   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWork/semaphoreMu-10            4378946        277.6   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexWorkSlack/stdlib-10           10696843        111.9   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWorkSlack/fifomu-10            5888556        201.2   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexWorkSlack/semaphoreMu-10       4249790        298.9   ns/op  175 B/op   2 allocs/op
-BenchmarkMutexNoSpin/stdlib-10               6842372        183.0   ns/op   12 B/op   0 allocs/op
-BenchmarkMutexNoSpin/fifomu-10               2220228        647.6   ns/op   12 B/op   0 allocs/op
-BenchmarkMutexNoSpin/semaphoreMu-10          1978136        570.3   ns/op   56 B/op   1 allocs/op
-BenchmarkMutexSpin/stdlib-10                 3180140        369.1   ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSpin/fifomu-10                  493010       2404     ns/op    0 B/op   0 allocs/op
-BenchmarkMutexSpin/semaphoreMu-10             478358       2511     ns/op  175 B/op   2 allocs/op
+BenchmarkLockContext_FastPath-10           867633475          1.444 ns/op    0 B/op   0 allocs/op
+BenchmarkLockContext_Contended-10            5860754        210.7   ns/op    0 B/op   0 allocs/op
+BenchmarkLockContext_Cancel-10              12342715         95.46  ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/stdlib-10        715136355          1.720 ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/fifomu-10       1000000000          1.135 ns/op    0 B/op   0 allocs/op
+BenchmarkMutexUncontended/semaphoreMu-10   343491252          3.753 ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/stdlib-10                     9430585        122.5   ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/fifomu-10                     5693994        178.5   ns/op    0 B/op   0 allocs/op
+BenchmarkMutex/semaphoreMu-10                5071872        230.9   ns/op  176 B/op   3 allocs/op
+BenchmarkMutexSlack/stdlib-10               10174064        111.7   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSlack/fifomu-10                6370922        188.6   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSlack/semaphoreMu-10           4715474        249.6   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexWork/stdlib-10                 9017374        132.4   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWork/fifomu-10                 5774289        210.3   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWork/semaphoreMu-10            4640755        267.4   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexWorkSlack/stdlib-10           10735240        120.3   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWorkSlack/fifomu-10            5727982        211.7   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexWorkSlack/semaphoreMu-10       4466762        269.4   ns/op  175 B/op   2 allocs/op
+BenchmarkMutexNoSpin/stdlib-10               8453712        150.7   ns/op   12 B/op   0 allocs/op
+BenchmarkMutexNoSpin/fifomu-10               2796036        392.2   ns/op   12 B/op   0 allocs/op
+BenchmarkMutexNoSpin/semaphoreMu-10          2544576        474.0   ns/op   55 B/op   1 allocs/op
+BenchmarkMutexSpin/stdlib-10                 5276641        232.9   ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSpin/fifomu-10                  495802       2431     ns/op    0 B/op   0 allocs/op
+BenchmarkMutexSpin/semaphoreMu-10             473323       2580     ns/op  175 B/op   2 allocs/op
 ```
 
 ### Continuous benchmarks
@@ -313,10 +316,11 @@ branch.
   as a trend, not as absolute performance.
 - A benchmark that becomes 2× slower or worse than the previous result
   triggers a regression comment on the commit. Alerts never fail the build.
-- Pull requests from branches in this repo are benchmarked against the
-  latest `master` result. The comparison appears in the workflow run
-  summary, and on a regression, as a PR comment. PR results are not
-  added to the history.
+- Pull requests are not compared against that history, because runners
+  differ too much from run to run. Instead, CI benchmarks the PR's base
+  and head commits alternately on one runner and reports the difference
+  with [`benchstat`](https://pkg.go.dev/golang.org/x/perf/cmd/benchstat)
+  in the workflow run summary. PR results are not added to the history.
 
 ## Requirements
 

@@ -123,6 +123,44 @@ type Mutex struct {
 	serving atomic.Uint64
 }
 
+// Invariants
+//
+// Lock, TryLock and Unlock read and write next and serving without
+// holding m.mu, so the mutex is only correct because the following
+// hold at every instant (for statements about m.waiters: whenever
+// m.mu is not held). There are five places that write the two
+// counters: the increment in Lock and LockContext, the CAS in TryLock,
+// the CAS in Unlock, the Store in handoff, and the CAS in abandon.
+// A change to any of them must be checked against every invariant.
+//
+//  1. serving <= next. The tickets in [serving, next) are the
+//     outstanding ones. Each is either held by exactly one caller, or
+//     abandoned and covered by exactly one tombstone; never both. The
+//     caller holding ticket serving owns the mutex.
+//
+//  2. Every element of m.waiters covers tickets >= serving. A live
+//     element is only inserted after served has reported false under
+//     m.mu, and serving only passes a ticket when its owner unlocks
+//     (by which time handoff has removed its element) or when handoff
+//     skips its tombstone (removing it). Together with the list being
+//     sorted, this is why handoff only ever looks at the front.
+//
+//  3. While a tombstone covering [lo, hi] is in the list, some ticket
+//     above hi is outstanding (next >= hi+2). Otherwise abandon would
+//     have rolled next back and removed it. So an abandoned ticket is
+//     never the newest, and a ticket number is only reissued after the
+//     tombstone covering it is gone.
+//
+//  4. Whenever serving equals a ticket that is in the list, a call to
+//     handoff under m.mu is still to come. The Unlock that advanced
+//     serving onto ticket t skips handoff only if it then reads
+//     next == t, which by 1 and 3 means t was not outstanding, and so
+//     not in the list. This is what rules out a lost wakeup.
+//
+//  5. serving never decreases. next decreases only in abandon, under
+//     m.mu, and never below serving (by 2, the tombstone it rolls back
+//     to starts at or above serving).
+
 // noCopy may be embedded into structs which must not be copied
 // after the first use. It is a zero-sized marker type with Lock
 // and Unlock methods so that `go vet -copylocks` detects accidental
