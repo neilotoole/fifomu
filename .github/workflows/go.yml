@@ -75,6 +75,36 @@ jobs:
       - name: Benchmark
         run: go test -bench=. -benchmem -run=^$ ./...
 
+  # Exhaustive checks, at bounds too slow for every `go test` run:
+  #
+  #   - TestModel_ExhaustiveInterleavings explores every interleaving of
+  #     a model of the locking protocol, for small numbers of threads.
+  #   - TestScenarios_Exhaustive runs every sequence of API calls up to a
+  #     given length against a reference model.
+  #
+  # Both also run, at smaller bounds, as part of build-test. No race
+  # detector here: the model checker is single-threaded, and the
+  # scenarios run one call at a time.
+  exhaustive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Model-check the locking protocol
+        env:
+          FIFOMU_MODEL: 2x4,3x2,4x1
+        run: go test -run '^TestModel_' -v -timeout 25m .
+
+      - name: Enumerate API scenarios
+        env:
+          FIFOMU_SCENARIO_LEN: 8
+        run: go test -run '^TestScenarios_' -v -timeout 25m .
+
   # Track benchmark performance over time. Runs only on pushes to master:
   # storing history needs a writable token, which PRs from forks/Dependabot
   # don't get. Pinned to a single OS, but ubuntu-latest still hands out

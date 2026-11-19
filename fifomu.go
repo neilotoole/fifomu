@@ -292,7 +292,9 @@ func (m *Mutex) abandon(e *element) {
 	e = m.waiters.abandon(e)
 	// The CAS fails if a later ticket has been issued. If it succeeds,
 	// every ticket from e.lo up is abandoned and nobody holds one, so
-	// taking them out of circulation cannot strand anyone.
+	// taking them out of circulation cannot strand anyone. (The CAS
+	// alone decides. The back-of-list test just skips it when a later
+	// element shows it would fail.)
 	if e == m.waiters.back() && m.next.CompareAndSwap(e.hi+1, e.lo) {
 		m.waiters.remove(e)
 	}

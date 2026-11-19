@@ -200,6 +200,18 @@ The test binary exercises:
   middle-of-queue cancel, cross-goroutine `Unlock`, idempotent
   `list.remove`, and the double-unlock panic message matching
   `sync.Mutex`.
+- Branch tests: each rarely-taken path (an in-flight ticket holder being
+  handed the mutex, a waiter abandoning the ticket being served, a signal
+  beating a cancellation, the ticket counter wrapping around) is forced
+  deterministically.
+- An exhaustive scenario test: every sequence of `Lock`, `LockContext`,
+  `TryLock`, `Unlock` and cancellation up to a fixed length, checked step
+  by step against a trivially correct reference model.
+- A model checker: the locking protocol restated as a state machine, with
+  every interleaving of a few threads explored and mutual exclusion, FIFO
+  order, freedom from deadlock and the documented invariants checked in
+  every state. It checks the protocol rather than the compiled code, and
+  it is itself tested: protocol bugs seeded on purpose must be caught.
 - A chaos test: 20 goroutines for 2 seconds, each picking a random
   operation, with an atomic counter asserting at most one holder at a
   time.
@@ -208,6 +220,18 @@ The test binary exercises:
   fails the run.
 
 No data races or goroutine leaks are tolerated.
+
+The scenario test and the model checker run at small bounds by default and
+at larger ones in CI. To go deeper locally:
+
+```shell
+FIFOMU_SCENARIO_LEN=8 go test -run '^TestScenarios_' .
+FIFOMU_MODEL=2x4,3x2,4x1 go test -run '^TestModel_' .
+```
+
+A separate, on-demand [soak workflow](.github/workflows/soak.yml) re-runs
+the suite for a set time across architectures, `GOMAXPROCS` values, and
+with and without the race detector.
 
 
 ## Benchmarks

@@ -58,8 +58,10 @@ func (l *list) back() *element {
 func (l *list) insert(ticket uint64, v waiter) *element {
 	l.lazyInit()
 
+	// The comparison is on the signed difference, so that ordering
+	// survives the ticket counter wrapping around.
 	at := l.root.prev
-	for at != &l.root && at.lo > ticket {
+	for at != &l.root && int64(at.lo-ticket) > 0 { //nolint:gosec // wraparound-safe ordering
 		at = at.prev
 	}
 

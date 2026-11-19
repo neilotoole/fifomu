@@ -72,15 +72,18 @@ jobs:
       - name: Build test binary
         run: go test -c ${{ matrix.race == 'race' && '-race' || '' }} -o fifomu.test .
 
-      # Each pass runs the whole suite in a fresh process, in shuffled
-      # order. The first failing pass stops the job and prints its output.
+      # Each pass runs the suite in a fresh process, in shuffled order.
+      # The first failing pass stops the job and prints its output.
       # -test.timeout turns a deadlock into a failure with a goroutine dump.
+      # The model checker and scenario enumeration are skipped: they are
+      # deterministic, so repeating them finds nothing new.
       - name: Soak
         run: |
           end=$((SECONDS + MINUTES * 60))
           passes=0
           while [ "$SECONDS" -lt "$end" ]; do
-            if ! ./fifomu.test -test.shuffle=on -test.timeout=10m > pass.log 2>&1; then
+            if ! ./fifomu.test -test.shuffle=on -test.timeout=10m \
+                -test.skip='^(TestModel_|TestScenarios_)' > pass.log 2>&1; then
               echo "::error::soak failed on pass $((passes + 1))"
               cat pass.log
               exit 1
