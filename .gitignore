@@ -2,3 +2,4 @@
 *.iml
 .claude/
 coverage.out
+/docs/
