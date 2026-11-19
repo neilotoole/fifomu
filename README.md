@@ -3,6 +3,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/neilotoole/fifomu/blob/master/LICENSE)
 ![Pipeline](https://github.com/neilotoole/fifomu/actions/workflows/go.yml/badge.svg)
 [![codecov](https://codecov.io/gh/neilotoole/fifomu/branch/master/graph/badge.svg)](https://codecov.io/gh/neilotoole/fifomu)
+[![Benchmarks](https://img.shields.io/badge/benchmarks-trend-blue)](https://neilotoole.github.io/fifomu/dev/bench/)
 
 # fifomu: mutex with FIFO lock acquisition
 
@@ -265,6 +266,25 @@ BenchmarkMutexSpin/stdlib-10                 3180140        369.1   ns/op    0 B
 BenchmarkMutexSpin/fifomu-10                  493010       2404     ns/op    0 B/op   0 allocs/op
 BenchmarkMutexSpin/semaphoreMu-10             478358       2511     ns/op  175 B/op   2 allocs/op
 ```
+
+### Continuous benchmarks
+
+CI also runs the benchmark suite on every push to `master`, and charts the
+results over time at
+[neilotoole.github.io/fifomu/dev/bench](https://neilotoole.github.io/fifomu/dev/bench/).
+The raw history lives on the
+[`benchmark-data`](https://github.com/neilotoole/fifomu/tree/benchmark-data)
+branch.
+
+- These numbers come from shared GitHub-hosted runners (`ubuntu-latest`),
+  so they are noisy and not comparable to the M1 figures above. Read them
+  as a trend, not as absolute performance.
+- A benchmark that becomes 2× slower or worse than the previous result
+  triggers a regression comment on the commit. Alerts never fail the build.
+- Pull requests from branches in this repo are benchmarked against the
+  latest `master` result. The comparison appears in the workflow run
+  summary, and on a regression, as a PR comment. PR results are not
+  added to the history.
 
 ## Requirements
 
